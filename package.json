@@ -2,7 +2,7 @@
   "name": "@vocalstack/payload",
   "version": "0.1.0",
   "description": "VocalStack for Payload CMS: a Transcribe button on every audio upload.",
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
