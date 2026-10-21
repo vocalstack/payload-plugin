@@ -1,0 +1,41 @@
+# Publishes the package to npm when a GitHub release is published in this
+# repository (tag v<version>, the version in package.json, e.g. v0.2.0).
+# npm trusts this repository, this workflow and the `npm` environment
+# (trusted publishing), so there is no token.  A prerelease version
+# (0.2.0-beta.1) goes to the `next` dist-tag, everything else to `latest`.
+
+name: publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing + provenance
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+      - name: the release tag matches package.json
+        run: |
+          version=$(node -p "require('./package.json').version")
+          [ "${GITHUB_REF_NAME}" = "v$version" ] || { echo "::error::ref ${GITHUB_REF_NAME} does not match version $version (want v$version)"; exit 1; }
+      - name: install + build
+        run: |
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          npm run build
+      - name: npm publish
+        run: |
+          case "$(node -p "require('./package.json').version")" in *-*) tag=next ;; *) tag=latest ;; esac
+          npm publish --access public --tag "$tag"
