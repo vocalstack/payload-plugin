@@ -4,7 +4,7 @@
  */
 export declare const DEFAULT_API_URL = "https://api.vocalstack.com";
 export declare const DEFAULT_DASHBOARD_URL = "https://app.vocalstack.com";
-export type JobState = 'cropping' | 'done' | 'failed' | 'fetching' | 'queued' | 'transcribing';
+export type JobState = 'cropping' | 'done' | 'failed' | 'fetching' | 'queued' | 'stopped' | 'transcribing';
 export type Job = {
     error?: null | string;
     /** Why a failed job failed; `stopped` when its owner stopped it. */

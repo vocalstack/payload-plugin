@@ -134,7 +134,7 @@ export function apiError(err: unknown): Response {
  */
 export async function checkJob(api: VocalStackAPI, target: Target, recordingId: string): Promise<StatusResponse> {
   const job = await api.job(recordingId)
-  if (job.state === 'failed' && job.errorCode === 'stopped') return restore(target)
+  if (job.state === 'stopped' || (job.state === 'failed' && job.errorCode === 'stopped')) return restore(target)
   if (job.state === 'failed' || job.state === 'cropping') {
     const error = job.state === 'cropping' ? 'VocalStack is waiting for a crop window; open the transcription in VocalStack.' : (job.error ?? 'The transcription failed.')
     return { error, status: 'failed', vocalstack: await target.save({ error, status: 'failed' }) }

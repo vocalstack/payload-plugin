@@ -111,7 +111,7 @@ export function apiError(err) {
  */
 export async function checkJob(api, target, recordingId) {
     const job = await api.job(recordingId);
-    if (job.state === 'failed' && job.errorCode === 'stopped')
+    if (job.state === 'stopped' || (job.state === 'failed' && job.errorCode === 'stopped'))
         return restore(target);
     if (job.state === 'failed' || job.state === 'cropping') {
         const error = job.state === 'cropping' ? 'VocalStack is waiting for a crop window; open the transcription in VocalStack.' : (job.error ?? 'The transcription failed.');
