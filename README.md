@@ -4,10 +4,8 @@ VocalStack for [Payload CMS](https://payloadcms.com) 3: a **Transcribe** button 
 
 ## Install
 
-Not on npm. Install from this repo; `dist/` is committed, so nothing builds on install (run `pnpm build` and commit `dist/` with every change):
-
 ```sh
-pnpm add github:vocalstack/payload-plugin
+pnpm add @vocalstack/payload
 ```
 
 ```ts
