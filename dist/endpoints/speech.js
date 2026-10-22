@@ -18,10 +18,23 @@ async function translate(api, target, lang, deadline) {
     const have = new Map((target.data.translations?.[lang]?.sentences ?? []).map((s) => [s.id, s.text]));
     const missing = sentences.filter((s) => !have.get(s.id)).map((s) => s.id);
     const batches = [];
-    for (let i = 0; i < missing.length; i += BATCH)
-        batches.push(missing.slice(i, i + BATCH));
     const got = new Map();
     let failure;
+    // What VocalStack translated before (for anyone) costs nothing to read back; only the rest is translated.
+    if (missing.length) {
+        try {
+            const stored = await api.storedTranslations(target.data.recordingId, lang);
+            for (const id of missing)
+                if (stored[String(id)]?.trim())
+                    got.set(id, stored[String(id)].trim());
+        }
+        catch {
+            // Not readable just now: translate them all instead.
+        }
+        const left = missing.filter((id) => !got.has(id));
+        for (let i = 0; i < left.length; i += BATCH)
+            batches.push(left.slice(i, i + BATCH));
+    }
     const worker = async () => {
         for (let batch = batches.shift(); batch; batch = batches.shift()) {
             if (Date.now() > deadline || failure)

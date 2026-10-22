@@ -81,6 +81,20 @@ export class VocalStackAPI {
     transcript(recordingId) {
         return this.request('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/transcript`);
     }
+    /**
+     * The translations VocalStack already holds for `lang`, by sentence id. `/translation`
+     * answers only the sentences it translates in that call, so stored ones are read here.
+     */
+    async storedTranslations(recordingId, lang) {
+        const t = await this.request('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/transcript?lang=${encodeURIComponent(lang)}`);
+        const out = {};
+        for (const s of t.sentences ?? []) {
+            const text = s.translations?.[lang];
+            if (text?.trim())
+                out[String(s.sentenceId)] = text;
+        }
+        return out;
+    }
     languages() {
         return this.request('GET', '/v1/languages');
     }

@@ -129,6 +129,11 @@ export declare class VocalStackAPI {
     /** Stop a job before it is done. Its job fails with `stopped`; what was transcribed so far stays in VocalStack. */
     stop(recordingId: string, reason?: string): Promise<unknown>;
     transcript(recordingId: string): Promise<Transcript>;
+    /**
+     * The translations VocalStack already holds for `lang`, by sentence id. `/translation`
+     * answers only the sentences it translates in that call, so stored ones are read here.
+     */
+    storedTranslations(recordingId: string, lang: string): Promise<Record<string, string>>;
     languages(): Promise<Languages>;
     /** Sentences translated into `lang`, by sentence id. Untranslated ones are translated now, which takes a while. */
     translation(recordingId: string, lang: string, sentenceIds: number[]): Promise<{
