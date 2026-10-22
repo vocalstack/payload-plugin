@@ -142,7 +142,7 @@ export const TranscriptField = ({ path }) => {
     const remove = () => {
         if (!window.confirm('Delete this transcript? It is removed when you save.'))
             return;
-        for (const name of ['sentences', 'language', 'error', 'recordingId', 'transcriptionId', 'transcribedAt']) {
+        for (const name of ['sentences', 'language', 'error', 'recordingId', 'transcriptionId', 'transcribedAt', 'translations', 'speech']) {
             dispatchFields({ type: 'UPDATE', path: `${base}${name}`, value: null });
         }
         dispatchFields({ type: 'UPDATE', path: `${base}status`, value: 'idle' });

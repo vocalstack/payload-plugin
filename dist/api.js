@@ -4,6 +4,7 @@
  */
 export const DEFAULT_API_URL = 'https://api.vocalstack.com';
 export const DEFAULT_DASHBOARD_URL = 'https://app.vocalstack.com';
+export const UNAVAILABLE = 'VocalStack is unavailable, try again shortly.';
 export class VocalStackAPIError extends Error {
     code;
     status;
@@ -20,15 +21,37 @@ export class VocalStackAPI {
         this.apiKey = apiKey;
         this.baseURL = baseURL;
     }
-    async request(method, path, body, headers = {}) {
-        const init = { headers: { accept: 'application/json', authorization: `Bearer ${this.apiKey}`, ...headers }, method };
-        if (body instanceof FormData)
-            init.body = body;
-        else if (body !== undefined) {
-            init.body = JSON.stringify(body);
+    /**
+     * The raw answer. An engine that is down or does not answer in time (an upgrade, an
+     * outage) is one error, `unavailable`, so the admin says so instead of hanging.
+     */
+    async fetch(method, path, opts = {}) {
+        const init = {
+            headers: { accept: 'application/json', authorization: `Bearer ${this.apiKey}`, ...opts.headers },
+            method,
+            redirect: opts.redirect,
+            signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
+        };
+        if (opts.body instanceof FormData)
+            init.body = opts.body;
+        else if (opts.body !== undefined) {
+            init.body = JSON.stringify(opts.body);
             init.headers['content-type'] = 'application/json';
         }
-        const res = await fetch(`${this.baseURL}${path}`, init);
+        let res;
+        try {
+            res = await fetch(`${this.baseURL}${path}`, init);
+        }
+        catch {
+            throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE);
+        }
+        if (res.status === 502 || res.status === 504 || (res.status === 503 && !res.headers.get('content-type')?.includes('json'))) {
+            throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE);
+        }
+        return res;
+    }
+    async request(method, path, body, headers = {}, timeoutMs) {
+        const res = await this.fetch(method, path, { body, headers, timeoutMs });
         const data = await res.json().catch(() => undefined);
         if (!res.ok) {
             const err = (data?.error ?? data);
@@ -57,6 +80,73 @@ export class VocalStackAPI {
     }
     transcript(recordingId) {
         return this.request('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/transcript`);
+    }
+    languages() {
+        return this.request('GET', '/v1/languages');
+    }
+    /** Sentences translated into `lang`, by sentence id. Untranslated ones are translated now, which takes a while. */
+    translation(recordingId, lang, sentenceIds) {
+        const q = new URLSearchParams({ lang, sentences: sentenceIds.join(',') });
+        return this.request('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/translation?${q}`, undefined, {}, 180_000);
+    }
+    /** Render spoken translations, one job per language, in `voice` (the default voice when left out). */
+    speak(recordingId, langs, voice) {
+        return this.request('POST', `/v1/recordings/${encodeURIComponent(recordingId)}/voice`, voice ? { langs, voice } : { langs });
+    }
+    voiceTracks(recordingId, lang) {
+        return this.request('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/voice${lang ? `?lang=${encodeURIComponent(lang)}` : ''}`);
+    }
+    /** A freshly signed address (an hour) of the recording's audio, or of a spoken translation's. */
+    async audioURL(recordingId, opts) {
+        const q = new URLSearchParams({ format: opts.format ?? 'mp3', kind: opts.kind });
+        if (opts.lang)
+            q.set('lang', opts.lang);
+        if (opts.voice)
+            q.set('voice', opts.voice);
+        const res = await this.fetch('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/audio?${q}`, { redirect: 'manual' });
+        const location = res.headers.get('location');
+        if (res.status >= 300 && res.status < 400 && location)
+            return new URL(location, this.baseURL).toString();
+        const data = (await res.json().catch(() => undefined));
+        throw new VocalStackAPIError(res.ok ? 502 : res.status, data?.code ?? 'http_error', data?.message ?? `VocalStack answered ${res.status}`);
+    }
+    /** A stretch of the recording as WAV (16 kHz mono), at most 120 s. */
+    async clip(recordingId, startS, endS) {
+        const res = await this.fetch('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/audio/clip?startS=${startS}&endS=${endS}`, { timeoutMs: 60_000 });
+        if (!res.ok)
+            await this.raise(res);
+        return res;
+    }
+    voice(id) {
+        return this.request('GET', `/v1/voices/${encodeURIComponent(id)}`);
+    }
+    /** Clone a voice from a recorded sample (30 s or more). Needs the speaker's permission. */
+    createVoice(sample, fileName, meta, idempotencyKey) {
+        const form = new FormData();
+        form.append('meta', JSON.stringify(meta));
+        form.append('sample', sample, fileName);
+        return this.request('POST', '/v1/voices', form, { 'idempotency-key': idempotencyKey }, 120_000);
+    }
+    deleteVoice(id) {
+        return this.request('DELETE', `/v1/voices/${encodeURIComponent(id)}`);
+    }
+    availableVoices(lang, recordingId) {
+        const q = new URLSearchParams({ lang });
+        if (recordingId)
+            q.set('recording', recordingId);
+        return this.request('GET', `/v1/voices/available?${q}`);
+    }
+    /** The cloned voice speaking a few seconds of `lang`, Ogg/Opus or CAF. 202 while it is being made. */
+    voicePreview(id, lang, format = 'ogg') {
+        const q = new URLSearchParams({ format });
+        if (lang)
+            q.set('lang', lang);
+        return this.fetch('GET', `/v1/voices/${encodeURIComponent(id)}/preview?${q}`, { timeoutMs: 60_000 });
+    }
+    async raise(res) {
+        const data = (await res.json().catch(() => undefined));
+        const err = data?.error ?? data;
+        throw new VocalStackAPIError(res.status, err?.code ?? 'http_error', err?.message ?? `VocalStack answered ${res.status}`);
     }
 }
 /** A short label for the connected account, from whatever `/v1/me` carries. */

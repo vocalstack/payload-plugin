@@ -1,12 +1,19 @@
 import type { CollectionSlug, Endpoint, PayloadRequest } from 'payload';
-import type { AudioFieldConfig, StatusResponse, TranscriptSentence, VocalStackFieldData, VocalStackPluginOptions } from '../types.js';
+import type { ArrayRow, AudioFieldConfig, StatusResponse, TranscriptSentence, VocalStackFieldData, VocalStackPluginOptions } from '../types.js';
 import { type Transcript, VocalStackAPI } from '../api.js';
+/** Whether the signed-in user may update this document, by the collection's own `access.update`. */
+export declare function canUpdate(req: PayloadRequest, collection: CollectionSlug, id: number | string): Promise<boolean>;
+type Patch = ((current: VocalStackFieldData) => VocalStackFieldData) | VocalStackFieldData;
 /** One transcribable thing: an upload document, or one row of an array field. */
 export type Target = {
     data: VocalStackFieldData;
+    doc: Record<string, unknown>;
     fileName: string;
     name: string;
-    save: (patch: VocalStackFieldData) => Promise<VocalStackFieldData>;
+    /** Set when the target is a row of an array field. */
+    row?: ArrayRow;
+    /** Merge into the saved field: a patch, or one made from the field as it is saved now. */
+    save: (patch: Patch) => Promise<VocalStackFieldData>;
     url: () => Promise<string | undefined>;
 };
 export declare function locate(req: PayloadRequest, collection: CollectionSlug, options: VocalStackPluginOptions, rowFields: AudioFieldConfig[], readAs: 'admin' | 'user'): Promise<Response | Target>;
@@ -23,3 +30,4 @@ export declare function checkJob(api: VocalStackAPI, target: Target, recordingId
  * they act on the upload document itself; with `?field=<array>&row=<row id>` on one row.
  */
 export declare function transcribeEndpoints(collection: CollectionSlug, options: VocalStackPluginOptions, rowFields: AudioFieldConfig[]): Endpoint[];
+export {};

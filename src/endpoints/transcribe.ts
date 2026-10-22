@@ -28,7 +28,7 @@ function serially<T>(key: string, run: () => Promise<T>): Promise<T> {
 const finishing = new Map<string, Promise<StatusResponse>>()
 
 /** Whether the signed-in user may update this document, by the collection's own `access.update`. */
-async function canUpdate(req: PayloadRequest, collection: CollectionSlug, id: number | string): Promise<boolean> {
+export async function canUpdate(req: PayloadRequest, collection: CollectionSlug, id: number | string): Promise<boolean> {
   if (!req.user) return false
   const access = req.payload.collections[collection]?.config.access.update
   if (!access) return true
@@ -38,12 +38,22 @@ async function canUpdate(req: PayloadRequest, collection: CollectionSlug, id: nu
   return totalDocs > 0
 }
 
+type Patch = ((current: VocalStackFieldData) => VocalStackFieldData) | VocalStackFieldData
+const merge = (current: null | undefined | VocalStackFieldData, patch: Patch): VocalStackFieldData => ({
+  ...current,
+  ...(typeof patch === 'function' ? patch(current ?? {}) : patch),
+})
+
 /** One transcribable thing: an upload document, or one row of an array field. */
 export type Target = {
   data: VocalStackFieldData
+  doc: Record<string, unknown>
   fileName: string
   name: string
-  save: (patch: VocalStackFieldData) => Promise<VocalStackFieldData>
+  /** Set when the target is a row of an array field. */
+  row?: ArrayRow
+  /** Merge into the saved field: a patch, or one made from the field as it is saved now. */
+  save: (patch: Patch) => Promise<VocalStackFieldData>
   url: () => Promise<string | undefined>
 }
 
@@ -67,11 +77,13 @@ export async function locate(
     if (!upload.mimeType?.startsWith('audio/')) return json({ error: 'Only audio files can be transcribed.' }, 400)
     return {
       data: upload.vocalstack ?? {},
+      doc,
       fileName: upload.filename ?? 'audio',
       name: upload.filename ?? `${collection} ${id}`,
       save: (patch) =>
         serially(`${collection}:${id}`, async () => {
-          const vocalstack = { ...upload.vocalstack, ...patch }
+          const fresh = (typeof patch === 'function' ? ((await find(true)) as null | UploadDoc) : null) ?? upload
+          const vocalstack = merge(fresh.vocalstack, patch)
           await req.payload.update({ id, collection, data: { vocalstack } as never, depth: 0, overrideAccess: true, req })
           return vocalstack
         }),
@@ -87,8 +99,10 @@ export async function locate(
   const base = req.payload.config.serverURL || req.origin
   return {
     data: row.vocalstack ?? {},
+    doc,
     fileName: 'audio',
     name: config.name?.({ doc, row }) ?? (typeof doc.title === 'string' && doc.title ? doc.title : `${collection} ${id}`),
+    row,
     save: (patch) =>
       serially(`${collection}:${id}`, async () => {
         // Re-read so edits saved to other rows meanwhile are kept; arrays are written whole.
@@ -96,7 +110,7 @@ export async function locate(
         let saved: VocalStackFieldData | undefined
         const rows = ((fresh[field] as ArrayRow[] | undefined) ?? []).map((r) => {
           if (r.id !== rowId) return r
-          saved = { ...r.vocalstack, ...patch }
+          saved = merge(r.vocalstack, patch)
           return { ...r, vocalstack: saved }
         })
         if (!saved) throw new Error('That row was removed.')
@@ -172,9 +186,12 @@ async function saveTranscript(api: VocalStackAPI, target: Target, recordingId: s
     error: null,
     language: transcript.lang ?? transcript.sentences.find((s) => s.language)?.language ?? null,
     sentences,
+    // A new recording: translations and readings of the old one no longer match it.
+    speech: null,
     status: 'done',
     transcribedAt: new Date().toISOString(),
     transcript: transcriptText(sentences),
+    translations: null,
   })
   return { progress: 100, status: 'done', vocalstack }
 }
