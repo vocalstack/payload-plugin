@@ -214,7 +214,7 @@ const CreateVoice = ({ base, name, onCancel, onCreated }) => {
         }
     };
     const muted = { color: 'var(--theme-elevation-500)', fontSize: 13, margin: 0 };
-    const clipURL = stretch && source ? `${serverURL}${api}/vocalstack/clip?${new URLSearchParams({ endS: String(stretch.endS), recording: source.recordingId, startS: String(stretch.startS) })}` : undefined;
+    const clipURL = stretch && source ? `${serverURL}${api}${base}/clip?${new URLSearchParams({ endS: String(stretch.endS), recording: source.recordingId, startS: String(stretch.startS) })}` : undefined;
     return (_jsxs("div", { style: { display: 'grid', gap: 10 }, children: [_jsxs("div", { className: "vs-voice-tabs", children: [_jsx(Button, { buttonStyle: tab === 'recording' ? 'primary' : 'secondary', margin: false, onClick: () => setTab('recording'), size: "small", children: "From a recording" }), _jsx(Button, { buttonStyle: tab === 'file' ? 'primary' : 'secondary', margin: false, onClick: () => setTab('file'), size: "small", children: "Upload a sample" })] }), tab === 'recording' ? (!sources ? (_jsx("p", { style: muted, children: error ? '' : 'Looking for transcribed recordings…' })) : !sources.length ? (_jsxs("p", { style: muted, children: ["No transcribed recordings of ", name || 'them', " yet. Transcribe one, or upload a sample."] })) : (_jsxs(_Fragment, { children: [sources.length > 1 && (_jsx("select", { "aria-label": "Recording", onChange: (e) => {
                             setSourceIdx(Number(e.target.value));
                             setStart(undefined);

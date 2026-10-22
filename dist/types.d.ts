@@ -1,4 +1,4 @@
-import type { CollectionSlug, PayloadRequest, TypeWithID } from 'payload';
+import type { CollectionConfig, CollectionSlug, PayloadRequest, TypeWithID } from 'payload';
 export type VocalStackPluginOptions = {
     /**
      * Where finished spoken readings are kept: the plugin downloads each one's MP3
@@ -6,8 +6,14 @@ export type VocalStackPluginOptions = {
      * storage and VocalStack is not asked again. Default: an upload collection
      * `vocalstack-readings` the plugin adds (point your storage adapter at it).
      * `false` streams readings from VocalStack instead.
+     *
+     * `overrides` adjusts the added collection (access, labels, admin, upload
+     * options). A host may instead define its own upload collection with that slug;
+     * the plugin then uses it as it is. It needs to accept `audio/mpeg` and have text
+     * fields `lang`, `recordingId` and `voice`.
      */
     readings?: false | {
+        overrides?: (collection: CollectionConfig) => CollectionConfig;
         slug?: CollectionSlug;
     };
     /** Turn the plugin off without removing it (fields stay in the schema). */

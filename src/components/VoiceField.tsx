@@ -301,7 +301,7 @@ const CreateVoice: React.FC<{
   }
 
   const muted = { color: 'var(--theme-elevation-500)', fontSize: 13, margin: 0 }
-  const clipURL = stretch && source ? `${serverURL}${api}/vocalstack/clip?${new URLSearchParams({ endS: String(stretch.endS), recording: source.recordingId, startS: String(stretch.startS) })}` : undefined
+  const clipURL = stretch && source ? `${serverURL}${api}${base}/clip?${new URLSearchParams({ endS: String(stretch.endS), recording: source.recordingId, startS: String(stretch.startS) })}` : undefined
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>

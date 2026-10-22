@@ -25,7 +25,9 @@ const EMPTY = { consentAt: null, createdAt: null, error: null, progress: null, s
  *                                           or multipart with a `file` sample and `_payload` { consent }
  *   DELETE /:id/vocalstack/voice            delete it, in VocalStack too
  *   GET    /:id/vocalstack/voice/sources    recordings to take the sample from
+ *   GET    /:id/vocalstack/voice/clip       a stretch of one of them, to hear before cloning (?recording=&startS=&endS=)
  *   GET    /:id/vocalstack/voice/preview    the voice speaking (?lang=&format=ogg|caf)
+ * A sample is only ever taken from the recordings `config.recordings` offers for that document.
  */
 export function voiceEndpoints(config, options) {
     const { collection } = config;
@@ -44,6 +46,8 @@ export function voiceEndpoints(config, options) {
             return json({ error: 'Not found.' }, 404);
         return { api: new VocalStackAPI(apiKey, apiURL), doc, id };
     };
+    /** Whether the recording is one the host offers for this person (`config.recordings`). */
+    const ownRecording = async (req, doc, recordingId) => ((await config.recordings?.({ doc, req })) ?? []).some((s) => s.recordingId === recordingId);
     const save = async (req, id, data) => {
         await req.payload.update({ id, collection, data: { vocalstackVoice: data }, depth: 0, overrideAccess: true, req });
         return data;
@@ -107,6 +111,8 @@ export function voiceEndpoints(config, options) {
                         }
                         if (!consent)
                             return json({ error: 'Confirm you have their permission to clone their voice.' }, 400);
+                        if (!(await ownRecording(req, doc, body.recordingId)))
+                            return json({ error: 'That recording is not one of theirs.' }, 403);
                         const clip = await api.clip(body.recordingId, startS, endS);
                         sample = { blob: await clip.blob(), name: 'sample.wav' };
                     }
@@ -164,6 +170,28 @@ export function voiceEndpoints(config, options) {
         },
         {
             method: 'get',
+            path: '/:id/vocalstack/voice/clip',
+            handler: async (req) => {
+                const found = await open(req, 'create');
+                if (found instanceof Response)
+                    return found;
+                const recording = req.searchParams.get('recording');
+                const [startS, endS] = [Number(req.searchParams.get('startS')), Number(req.searchParams.get('endS'))];
+                if (!recording || !(endS > startS) || endS - startS > MAX_SAMPLE_S)
+                    return json({ error: `At most ${MAX_SAMPLE_S} seconds.` }, 400);
+                if (!(await ownRecording(req, found.doc, recording)))
+                    return json({ error: 'That recording is not one of theirs.' }, 403);
+                try {
+                    const res = await found.api.clip(recording, startS, endS);
+                    return new Response(res.body, { headers: { 'cache-control': 'private, max-age=3600', 'content-type': 'audio/wav' } });
+                }
+                catch (err) {
+                    return apiError(err);
+                }
+            },
+        },
+        {
+            method: 'get',
             path: '/:id/vocalstack/voice/preview',
             handler: async (req) => {
                 const found = await open(req, 'hear');
@@ -191,16 +219,17 @@ export function voiceEndpoints(config, options) {
 }
 let languages;
 /**
- * Shared admin lookups (signed in only):
+ * Shared admin lookups (signed in, and `options.access` when set):
  *   GET /vocalstack/languages                      what can be translated and spoken
  *   GET /vocalstack/voices?lang=&recording=        voices that can speak a language
- *   GET /vocalstack/clip?recording=&startS=&endS=  a stretch of a recording, to hear before cloning
  */
 export function lookupEndpoints(options) {
     const apiURL = options.apiURL ?? DEFAULT_API_URL;
     const api = async (req) => {
         if (!req.user)
             return json({ error: 'Sign in first.' }, 401);
+        if (options.access && !(await options.access({ req })))
+            return json({ error: 'You may not use VocalStack here.' }, 403);
         const apiKey = await resolveAPIKey(req, options);
         if (!apiKey)
             return json({ code: 'not_connected', error: 'Connect VocalStack first.' }, 409);
@@ -236,26 +265,6 @@ export function lookupEndpoints(options) {
                     return json({ error: 'Which language?' }, 400);
                 try {
                     return json(await client.availableVoices(lang, req.searchParams.get('recording') ?? undefined));
-                }
-                catch (err) {
-                    return apiError(err);
-                }
-            },
-        },
-        {
-            method: 'get',
-            path: '/vocalstack/clip',
-            handler: async (req) => {
-                const client = await api(req);
-                if (client instanceof Response)
-                    return client;
-                const recording = req.searchParams.get('recording');
-                const [startS, endS] = [Number(req.searchParams.get('startS')), Number(req.searchParams.get('endS'))];
-                if (!recording || !(endS > startS) || endS - startS > MAX_SAMPLE_S)
-                    return json({ error: `At most ${MAX_SAMPLE_S} seconds.` }, 400);
-                try {
-                    const res = await client.clip(recording, startS, endS);
-                    return new Response(res.body, { headers: { 'cache-control': 'private, max-age=3600', 'content-type': 'audio/wav' } });
                 }
                 catch (err) {
                     return apiError(err);

@@ -49,12 +49,12 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
 | `audioFields` | none | Audio that isn't an upload document; see below. |
 | `spokenLanguage` | auto-detect | A Whisper language code (`en`, `ro`, …). |
 | `fileURL` | the doc's `url`, made absolute | `({ doc, collection, req }) => string`: the address VocalStack fetches. Point it at your bucket's public URL to skip the Payload file proxy. |
-| `access` | signed-in users who can update the doc | Extra check for transcribing and for changing the connection. |
+| `access` | signed-in users who can update the doc | Extra check for transcribing, translating, voices and the admin lookups, and for changing the connection. |
 | `oneClickConnect` | `false` | Show **Connect VocalStack** (see below). |
 | `apiURL` / `dashboardURL` | `https://api.vocalstack.com` / `https://app.vocalstack.com` | |
 | `enabled` | `true` | `false` keeps the schema but removes the button and the endpoints. |
 | `voices` | none | Collections of people who get a cloned voice; see below. |
-| `readings` | `{ slug: 'vocalstack-readings' }` | The upload collection finished readings are kept in (added by the plugin). `false` streams them from VocalStack instead. |
+| `readings` | `{ slug: 'vocalstack-readings' }` | The upload collection finished readings are kept in, added by the plugin; `overrides: (collection) => collection` adjusts it. `false` streams readings from VocalStack instead. See below for bringing your own. |
 | `speechVoice` | VocalStack's default | `({ collection, doc, row, req }) => voice`: the voice a transcript's translations are read in, e.g. its speaker's (`clonedVoiceKey(person.vocalstackVoice)`). |
 
 ### Audio that isn't an upload
@@ -100,6 +100,8 @@ vocalstackPlugin({
 })
 ```
 
+A sample from a recording can only come from the recordings `recordings` returns for that document: cloning, and hearing a stretch first (`GET /:id/vocalstack/voice/clip`), refuse any other.
+
 Cloning needs at least 30 seconds of the person speaking alone (a minute is better, at most two), and the editor confirms they have the person's permission. From a recording, the editor clicks where the stretch starts and hears it before cloning; the plugin takes it from VocalStack. An uploaded sample is sent through your server, so on hosts that cap request bodies (Vercel: 4.5 MB) keep it to a minute or two of MP3 or M4A. Training takes a few minutes; the panel follows it. Deleting the voice deletes it in VocalStack too.
 
 ### Translations and readings
@@ -107,6 +109,8 @@ Cloning needs at least 30 seconds of the person speaking alone (a minute is bett
 Translating an hour-long transcript takes a few minutes; the admin keeps calling until it is done, and what is translated is saved as it goes. A reading is rendered by VocalStack (a few languages at a time per recording) and saved once ready. The reading keeps each sentence where it was said, unless the one before still runs, so a player can follow along with `speech[lang].sentences` (`timedTokens()` works on them as on the transcript).
 
 **Everything is asked for once and kept.** The transcript (text, sentences, word times) and each translation are saved on the document. Translating again only asks for sentences that have none, and reads ones VocalStack already translated back from `/transcript?lang=` rather than translating them again. A finished reading's MP3 is downloaded once and saved as an upload in the `vocalstack-readings` collection (option `readings`), so listeners are served from your storage: `GET …/vocalstack/audio` redirects to that file, or for the spoken language to your own audio file, and only falls back to VocalStack while a reading isn't kept yet. Point your storage adapter at the readings collection, e.g. `s3Storage({ collections: { 'vocalstack-readings': { prefix: 'readings', disablePayloadAccessControl: true } } })` for direct public URLs.
+
+**The readings collection.** By default the plugin adds `vocalstack-readings`: public read, and create, update and delete for signed-in users. Change it with `readings: { overrides: (collection) => ({ ...collection, access: { ... } }) }`, or define an upload collection with that slug (or `readings.slug`) yourself; the plugin then uses yours as it is. It needs to accept `audio/mpeg` and to have text fields `lang`, `recordingId` and `voice`.
 
 When VocalStack does not answer (an outage, an upgrade), the endpoints say *VocalStack is unavailable, try again shortly.* instead of waiting.
 

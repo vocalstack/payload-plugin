@@ -160,7 +160,7 @@ export const vocalstackPlugin =
 
     return {
       ...config,
-      collections: [...collections, ...(readings && !collections.some((c) => c.slug === readings) ? [readingsCollection(readings)] : [])].map((original) => {
+      collections: [...collections, ...(readings && !collections.some((c) => c.slug === readings) ? [(options.readings && options.readings.overrides ? options.readings.overrides : (c: CollectionConfig) => c)(readingsCollection(readings))] : [])].map((original) => {
         const voice = voices.find((v) => v.collection === original.slug)
         const collection = voice
           ? {
