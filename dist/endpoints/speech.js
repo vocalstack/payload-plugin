@@ -109,6 +109,24 @@ async function dropReading(req, slug, speech) {
         return;
     await req.payload.delete({ collection: slug, id: speech.audio.id, overrideAccess: true, req }).catch(() => { });
 }
+/** Delete kept readings of this recording, in these languages, that the field does not point to. */
+async function sweepReadings(req, slug, data, langs) {
+    if (!data.recordingId || !langs.length)
+        return;
+    const found = await req.payload.find({
+        collection: slug,
+        depth: 0,
+        limit: 50,
+        overrideAccess: true,
+        pagination: false,
+        req,
+        where: { and: [{ recordingId: { equals: data.recordingId } }, { lang: { in: langs } }] },
+    });
+    const keep = new Set(langs.map((l) => data.speech?.[l]?.audio?.id).filter((id) => id !== undefined).map(String));
+    for (const doc of found.docs)
+        if (!keep.has(String(doc.id)))
+            await req.payload.delete({ collection: slug, id: doc.id, overrideAccess: true, req }).catch(() => { });
+}
 /** The track VocalStack made for this language in this voice. */
 const trackFor = (tracks, lang, speech) => tracks.find((t) => t.lang === lang && t.voiceKey === (speech.voice ?? ''));
 /** A spoken translation brought up to date from VocalStack's track. */
@@ -325,6 +343,10 @@ export function speechEndpoints(collection, options, rowFields) {
                     });
                     for (const loser of losers)
                         await dropReading(req, readings, loser);
+                    // Requests on other servers can still both keep a reading: whatever the document
+                    // does not point to, for these languages of this recording, is a spare copy.
+                    if (readings)
+                        await sweepReadings(req, readings, saved, Object.keys(next));
                     return answer(saved);
                 }
                 catch (err) {
