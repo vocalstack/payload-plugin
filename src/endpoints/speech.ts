@@ -60,10 +60,14 @@ async function translate(api: VocalStackAPI, target: Target, lang: string, deadl
     })
   }
   // Nothing came back at all: say why, rather than "call again" forever. VocalStack
-  // answers an empty set when its translator is down, so that is unavailable too.
+  // answers an empty set when its translator is down, so for a language with no
+  // translation yet that is unavailable too.
   if (failure && !got.size) throw failure
-  if (missing.length && !got.size && Date.now() <= deadline) throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
-  return { data, more: got.size < missing.length }
+  const ranOut = Date.now() > deadline
+  if (missing.length && !got.size && !have.size && !ranOut) throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
+  // A few sentences VocalStack will not translate (it answers nothing for them) must
+  // not keep the language "still translating": only running out of time leaves more.
+  return { data, more: ranOut && got.size < missing.length }
 }
 
 /** The track VocalStack made for this language in this voice. */
