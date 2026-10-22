@@ -1,4 +1,4 @@
-import { DEFAULT_API_URL, VocalStackAPI } from '../api.js';
+import { DEFAULT_API_URL, UNAVAILABLE, VocalStackAPI, VocalStackAPIError } from '../api.js';
 import { resolveAPIKey } from '../settings.js';
 import { spokenSentences } from '../text.js';
 import { apiError, canUpdate, locate } from './transcribe.js';
@@ -52,9 +52,12 @@ async function translate(api, target, lang, deadline) {
             return { translations: { ...current.translations, [lang]: translation } };
         });
     }
-    // Nothing came back at all: say why, rather than "call again" forever.
+    // Nothing came back at all: say why, rather than "call again" forever. VocalStack
+    // answers an empty set when its translator is down, so that is unavailable too.
     if (failure && !got.size)
         throw failure;
+    if (missing.length && !got.size && Date.now() <= deadline)
+        throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE);
     return { data, more: got.size < missing.length };
 }
 /** The track VocalStack made for this language in this voice. */
