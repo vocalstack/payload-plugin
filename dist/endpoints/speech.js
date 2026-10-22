@@ -79,7 +79,7 @@ async function translate(api, target, lang, deadline) {
     return { data, more: ranOut && got.size < missing.length };
 }
 /** A file name from the recording's name: `sermon-ro.mp3`. */
-const readingName = (target, lang, voice) => `${(target.fileName.replace(/\.[^.]+$/, '') || target.name).replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'reading'}-${lang}${voice ? '-' + voice.replace(/[^\w-]+/g, '-') : ''}.mp3`;
+const readingName = (target, lang, voice) => `${(target.name || target.fileName.replace(/\.[^.]+$/, '')).replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'reading'}-${lang}${voice ? '-' + voice.replace(/[^\w-]+/g, '-') : ''}.mp3`;
 /**
  * Download a finished reading's MP3 from VocalStack, once, and keep it as an upload in
  * the readings collection, so listeners are served from the site's storage from then on.
@@ -101,6 +101,8 @@ async function keepReading(req, api, slug, target, lang, speech) {
     }));
     return { ...speech, audio: { filename: doc.filename ?? null, id: doc.id, url: doc.url ?? '' } };
 }
+/** Readings being downloaded right now, so overlapping status checks fetch each one once. */
+const keeping = new Set();
 /** Remove a reading's kept file (it is being replaced, or its language dropped). */
 async function dropReading(req, slug, speech) {
     if (!slug || !speech?.audio)
@@ -288,17 +290,42 @@ export function speechEndpoints(collection, options, rowFields) {
                     // Each finished reading is downloaded once and kept; after that VocalStack is not asked for it again.
                     if (readings) {
                         for (const [lang, speech] of [...unkept, ...Object.entries(next)]) {
+                            const key = `${collection}:${req.routeParams?.id}:${req.searchParams.get('row') ?? ''}:${lang}`;
+                            if (keeping.has(key))
+                                continue;
+                            keeping.add(key);
                             try {
-                                next[lang] = await keepReading(req, api, readings, target, lang, next[lang] ?? speech);
+                                const done = await keepReading(req, api, readings, target, lang, next[lang] ?? speech);
+                                next[lang] = done;
                             }
                             catch {
                                 // Not now: it is still playable from VocalStack, and the next look tries again.
+                            }
+                            finally {
+                                keeping.delete(key);
                             }
                         }
                     }
                     if (!Object.keys(next).length)
                         return answer(target.data);
-                    return answer(await target.save((current) => ({ speech: { ...current.speech, ...next } })));
+                    const losers = [];
+                    const saved = await target.save((current) => {
+                        const merged = { ...current.speech };
+                        for (const [lang, s] of Object.entries(next)) {
+                            // Kept by an overlapping request meanwhile (another server): theirs stays, ours goes.
+                            const theirs = current.speech?.[lang]?.audio;
+                            if (theirs && s.audio && theirs.id !== s.audio.id) {
+                                losers.push(s);
+                                merged[lang] = { ...s, audio: theirs };
+                            }
+                            else
+                                merged[lang] = s;
+                        }
+                        return { speech: merged };
+                    });
+                    for (const loser of losers)
+                        await dropReading(req, readings, loser);
+                    return answer(saved);
                 }
                 catch (err) {
                     return apiError(err);
