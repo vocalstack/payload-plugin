@@ -54,6 +54,7 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
 | `apiURL` / `dashboardURL` | `https://api.vocalstack.com` / `https://app.vocalstack.com` | |
 | `enabled` | `true` | `false` keeps the schema but removes the button and the endpoints. |
 | `voices` | none | Collections of people who get a cloned voice; see below. |
+| `readings` | `{ slug: 'vocalstack-readings' }` | The upload collection finished readings are kept in (added by the plugin). `false` streams them from VocalStack instead. |
 | `speechVoice` | VocalStack's default | `({ collection, doc, row, req }) => voice`: the voice a transcript's translations are read in, e.g. its speaker's (`clonedVoiceKey(person.vocalstackVoice)`). |
 
 ### Audio that isn't an upload
@@ -104,6 +105,8 @@ Cloning needs at least 30 seconds of the person speaking alone (a minute is bett
 ### Translations and readings
 
 Translating a sermon-length transcript takes a few minutes; the admin keeps calling until it is done, and what is translated is saved as it goes. A reading is rendered by VocalStack (a few languages at a time per recording) and saved once ready. The reading keeps each sentence where it was said, unless the one before still runs, so a player can follow along with `speech[lang].sentences` (`timedTokens()` works on them as on the transcript).
+
+**Everything is asked for once and kept.** The transcript (text, sentences, word times) and each translation are saved on the document. Translating again only asks for sentences that have none, and reads ones VocalStack already translated back from `/transcript?lang=` rather than translating them again. A finished reading's MP3 is downloaded once and saved as an upload in the `vocalstack-readings` collection (option `readings`), so listeners are served from your storage: `GET …/vocalstack/audio` redirects to that file, or for the spoken language to your own audio file, and only falls back to VocalStack while a reading isn't kept yet. Point your storage adapter at the readings collection, e.g. `s3Storage({ collections: { 'vocalstack-readings': { prefix: 'readings', disablePayloadAccessControl: true } } })` for direct public URLs.
 
 When VocalStack does not answer (an outage, an upgrade), the endpoints say *VocalStack is unavailable, try again shortly.* instead of waiting.
 

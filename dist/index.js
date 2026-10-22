@@ -3,6 +3,7 @@ import { speechEndpoints } from './endpoints/speech.js';
 import { streamEndpoint } from './endpoints/stream.js';
 import { transcribeEndpoints } from './endpoints/transcribe.js';
 import { lookupEndpoints, voiceEndpoints } from './endpoints/voices.js';
+import { readingsCollection, readingsSlug } from './readings.js';
 import { settingsGlobal } from './settings.js';
 export { spokenSentences, timedTokens, transcriptText } from './text.js';
 /** The voice to read translations in (`clone:<id>`), once a person's cloned voice is ready. */
@@ -133,7 +134,8 @@ function addToArray(fields, name, extra) {
 export const vocalstackPlugin = (options = {}) => (config) => {
     const enabled = options.enabled !== false;
     const collections = config.collections ?? [];
-    const uploads = new Set(options.collections ?? collections.filter(acceptsAudio).map((c) => c.slug));
+    const readings = readingsSlug(options);
+    const uploads = new Set(options.collections ?? collections.filter((c) => c.slug !== readings && acceptsAudio(c)).map((c) => c.slug));
     const audioFields = options.audioFields ?? [];
     const voices = options.voices ?? [];
     for (const v of voices) {
@@ -142,7 +144,7 @@ export const vocalstackPlugin = (options = {}) => (config) => {
     }
     return {
         ...config,
-        collections: collections.map((original) => {
+        collections: [...collections, ...(readings && !collections.some((c) => c.slug === readings) ? [readingsCollection(readings)] : [])].map((original) => {
             const voice = voices.find((v) => v.collection === original.slug);
             const collection = voice
                 ? {

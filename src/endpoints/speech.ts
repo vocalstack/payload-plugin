@@ -3,6 +3,7 @@ import type { CollectionSlug, Endpoint, PayloadRequest } from 'payload'
 import type { AudioFieldConfig, Speech, SpeechResponse, TranscriptSentence, Translation, VocalStackFieldData, VocalStackPluginOptions } from '../types.js'
 
 import { DEFAULT_API_URL, UNAVAILABLE, VocalStackAPI, VocalStackAPIError, type VoiceTrack } from '../api.js'
+import { readingsSlug } from '../readings.js'
 import { resolveAPIKey } from '../settings.js'
 import { spokenSentences } from '../text.js'
 import { apiError, canUpdate, locate, type Target } from './transcribe.js'
@@ -79,6 +80,36 @@ async function translate(api: VocalStackAPI, target: Target, lang: string, deadl
   return { data, more: ranOut && got.size < missing.length }
 }
 
+/** A file name from the recording's name: `sermon-ro.mp3`. */
+const readingName = (target: Target, lang: string, voice: null | string) =>
+  `${(target.fileName.replace(/\.[^.]+$/, '') || target.name).replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'reading'}-${lang}${voice ? '-' + voice.replace(/[^\w-]+/g, '-') : ''}.mp3`
+
+/**
+ * Download a finished reading's MP3 from VocalStack, once, and keep it as an upload in
+ * the readings collection, so listeners are served from the site's storage from then on.
+ */
+async function keepReading(req: PayloadRequest, api: VocalStackAPI, slug: CollectionSlug, target: Target, lang: string, speech: Speech): Promise<Speech> {
+  if (speech.audio || speech.state !== 'sealed') return speech
+  const src = await api.audioURL(target.data.recordingId!, { kind: 'voice', lang, voice: speech.voice ?? undefined })
+  const res = await fetch(src)
+  if (!res.ok) throw new VocalStackAPIError(502, 'unavailable', UNAVAILABLE)
+  const data = Buffer.from(await res.arrayBuffer())
+  const doc = (await req.payload.create({
+    collection: slug,
+    data: { lang, recordingId: target.data.recordingId, voice: speech.voice ?? '' },
+    file: { data, mimetype: 'audio/mpeg', name: readingName(target, lang, speech.voice), size: data.length },
+    overrideAccess: true,
+    req,
+  })) as unknown as { filename?: null | string; id: number | string; url?: null | string }
+  return { ...speech, audio: { filename: doc.filename ?? null, id: doc.id, url: doc.url ?? '' } }
+}
+
+/** Remove a reading's kept file (it is being replaced, or its language dropped). */
+async function dropReading(req: PayloadRequest, slug: CollectionSlug | undefined, speech: Speech | undefined) {
+  if (!slug || !speech?.audio) return
+  await req.payload.delete({ collection: slug, id: speech.audio.id, overrideAccess: true, req }).catch(() => {})
+}
+
 /** The track VocalStack made for this language in this voice. */
 const trackFor = (tracks: VoiceTrack[], lang: string, speech: Speech) => tracks.find((t) => t.lang === lang && t.voiceKey === (speech.voice ?? ''))
 
@@ -112,6 +143,7 @@ function settle(speech: Speech, track: undefined | VoiceTrack, translation: Tran
  */
 export function speechEndpoints(collection: CollectionSlug, options: VocalStackPluginOptions, rowFields: AudioFieldConfig[]): Endpoint[] {
   const apiURL = options.apiURL ?? DEFAULT_API_URL
+  const readings = readingsSlug(options)
 
   /** An editor's target with a finished transcript, and the API to work on it. */
   const editable = async (req: PayloadRequest, verb: string): Promise<Response | { api: VocalStackAPI; target: Target }> => {
@@ -173,6 +205,7 @@ export function speechEndpoints(collection: CollectionSlug, options: VocalStackP
         const found = await editable(req, 'change')
         if (found instanceof Response) return found
         const lang = req.searchParams.get('lang') ?? ''
+        await dropReading(req, readings, found.target.data.speech?.[lang])
         const vocalstack = await found.target.save((current) => {
           const { [lang]: _t, ...translations } = current.translations ?? {}
           const { [lang]: _s, ...speech } = current.speech ?? {}
@@ -203,6 +236,7 @@ export function speechEndpoints(collection: CollectionSlug, options: VocalStackP
             if (done.more) return json({ code: 'translating', error: 'Still translating; try again in a moment.' }, 409)
           }
           await api.speak(target.data.recordingId!, langs, voice)
+          for (const lang of langs) await dropReading(req, readings, data.speech?.[lang])
           const requestedAt = new Date().toISOString()
           const vocalstack = await target.save((current) => ({
             speech: { ...current.speech, ...Object.fromEntries(langs.map((l) => [l, { error: null, requestedAt, state: 'queued', voice: voice ?? null } satisfies Speech])) },
@@ -220,20 +254,37 @@ export function speechEndpoints(collection: CollectionSlug, options: VocalStackP
         if (!req.user) return json({ error: 'Sign in first.' }, 401)
         const target = await locate(req, collection, options, rowFields, 'user')
         if (target instanceof Response) return target
-        const pending = Object.entries(target.data.speech ?? {}).filter(([, s]) => s.state === 'queued' || s.state === 'running')
+        const all = Object.entries(target.data.speech ?? {})
+        const pending = all.filter(([, s]) => s.state === 'queued' || s.state === 'running')
+        // Finished readings whose file is not kept yet (made before readings were kept, or a download that failed).
+        const unkept = readings ? all.filter(([, s]) => s.state === 'sealed' && !s.audio) : []
         const answer = async (vocalstack: VocalStackFieldData) => json({ defaultVoice: await defaultVoice(req, target), vocalstack } satisfies SpeechResponse)
-        if (!pending.length || !target.data.recordingId) return answer(target.data)
+        if ((!pending.length && !unkept.length) || !target.data.recordingId) return answer(target.data)
 
         const apiKey = await resolveAPIKey(req, options)
         if (!apiKey) return json({ code: 'not_connected', error: 'Connect VocalStack first.' }, 409)
         try {
-          const tracks = await new VocalStackAPI(apiKey, apiURL).voiceTracks(target.data.recordingId)
-          const changed = pending.flatMap(([lang, speech]) => {
-            const next = settle(speech, trackFor(tracks, lang, speech), target.data.translations?.[lang])
-            return next.state !== speech.state || next.error !== speech.error ? [[lang, next] as const] : []
-          })
-          if (!changed.length) return answer(target.data)
-          return answer(await target.save((current) => ({ speech: { ...current.speech, ...Object.fromEntries(changed) } })))
+          const api = new VocalStackAPI(apiKey, apiURL)
+          const next: Record<string, Speech> = {}
+          if (pending.length) {
+            const tracks = await api.voiceTracks(target.data.recordingId)
+            for (const [lang, speech] of pending) {
+              const settled = settle(speech, trackFor(tracks, lang, speech), target.data.translations?.[lang])
+              if (settled.state !== speech.state || settled.error !== speech.error) next[lang] = settled
+            }
+          }
+          // Each finished reading is downloaded once and kept; after that VocalStack is not asked for it again.
+          if (readings) {
+            for (const [lang, speech] of [...unkept, ...Object.entries(next)]) {
+              try {
+                next[lang] = await keepReading(req, api, readings, target, lang, next[lang] ?? speech)
+              } catch {
+                // Not now: it is still playable from VocalStack, and the next look tries again.
+              }
+            }
+          }
+          if (!Object.keys(next).length) return answer(target.data)
+          return answer(await target.save((current) => ({ speech: { ...current.speech, ...next } })))
         } catch (err) {
           return apiError(err)
         }
@@ -252,6 +303,12 @@ export function speechEndpoints(collection: CollectionSlug, options: VocalStackP
         const spoken = !lang || lang === language
         const reading = spoken ? undefined : speech?.[lang]
         if (!spoken && reading?.state !== 'sealed') return json({ error: 'There is no reading in that language.' }, 404)
+
+        // Kept files are served from the site's own storage: no VocalStack request.
+        const own = spoken ? await target.url().catch(() => undefined) : reading?.audio?.url
+        if (own) {
+          return new Response(null, { headers: { 'cache-control': 'public, max-age=3600, s-maxage=86400', location: new URL(own, req.url ?? 'http://localhost').toString() }, status: 302 })
+        }
 
         const apiKey = await resolveAPIKey(req, options)
         if (!apiKey) return json({ error: 'Not available.' }, 404)

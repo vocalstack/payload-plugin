@@ -1,5 +1,15 @@
 import type { CollectionSlug, PayloadRequest, TypeWithID } from 'payload';
 export type VocalStackPluginOptions = {
+    /**
+     * Where finished spoken readings are kept: the plugin downloads each one's MP3
+     * once and saves it as an upload here, so listeners are served from your
+     * storage and VocalStack is not asked again. Default: an upload collection
+     * `vocalstack-readings` the plugin adds (point your storage adapter at it).
+     * `false` streams readings from VocalStack instead.
+     */
+    readings?: false | {
+        slug?: CollectionSlug;
+    };
     /** Turn the plugin off without removing it (fields stay in the schema). */
     enabled?: boolean;
     /**
@@ -106,6 +116,12 @@ export type Speech = {
     state: SpeechState;
     /** The voice it is spoken in; `null` for VocalStack's default. */
     voice: null | string;
+    /** Once sealed: the reading's MP3, saved once in the readings upload collection and served from there. */
+    audio?: null | {
+        filename?: null | string;
+        id: number | string;
+        url: string;
+    };
 };
 export type ArrayRow = Record<string, unknown> & {
     id?: null | string;
