@@ -10,7 +10,7 @@ import { apiError, canUpdate, locate, type Target } from './transcribe.js'
 
 const json = (body: unknown, status = 200) => Response.json(body, { status })
 
-// Translating is slow (a sermon takes minutes): batches run side by side, and a call
+// Translating is slow (an hour-long recording takes minutes): batches run side by side, and a call
 // stops starting new ones after a while so it answers before the host's time limit.
 // The client calls again to carry on; what is done is saved each time.
 const BATCH = 30
@@ -80,7 +80,7 @@ async function translate(api: VocalStackAPI, target: Target, lang: string, deadl
   return { data, more: ranOut && got.size < missing.length }
 }
 
-/** A file name from the recording's name: `sermon-ro.mp3`. */
+/** A file name from the recording's name: `episode-12-ro.mp3`. */
 const readingName = (target: Target, lang: string, voice: null | string) =>
   `${(target.name || target.fileName.replace(/\.[^.]+$/, '')).replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'reading'}-${lang}${voice ? '-' + voice.replace(/[^\w-]+/g, '-') : ''}.mp3`
 

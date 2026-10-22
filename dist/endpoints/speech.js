@@ -4,7 +4,7 @@ import { resolveAPIKey } from '../settings.js';
 import { spokenSentences } from '../text.js';
 import { apiError, canUpdate, locate } from './transcribe.js';
 const json = (body, status = 200) => Response.json(body, { status });
-// Translating is slow (a sermon takes minutes): batches run side by side, and a call
+// Translating is slow (an hour-long recording takes minutes): batches run side by side, and a call
 // stops starting new ones after a while so it answers before the host's time limit.
 // The client calls again to carry on; what is done is saved each time.
 const BATCH = 30;
@@ -78,7 +78,7 @@ async function translate(api, target, lang, deadline) {
     // not keep the language "still translating": only running out of time leaves more.
     return { data, more: ranOut && got.size < missing.length };
 }
-/** A file name from the recording's name: `sermon-ro.mp3`. */
+/** A file name from the recording's name: `episode-12-ro.mp3`. */
 const readingName = (target, lang, voice) => `${(target.name || target.fileName.replace(/\.[^.]+$/, '')).replace(/[^\w.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'reading'}-${lang}${voice ? '-' + voice.replace(/[^\w-]+/g, '-') : ''}.mp3`;
 /**
  * Download a finished reading's MP3 from VocalStack, once, and keep it as an upload in
