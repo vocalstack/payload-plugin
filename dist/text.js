@@ -50,3 +50,29 @@ export function timedTokens(s) {
     const span = (s.end - s.start) / tokens.length;
     return tokens.map((t, i) => [round(s.start + i * span), round(s.start + (i + 1) * span), t]);
 }
+/** The pause VocalStack leaves between two spoken sentences, at least. */
+const SPOKEN_GAP_S = 0.15;
+/**
+ * Translated sentences in the timing of their spoken track. The track keeps each
+ * sentence where it was said, unless the one before still runs: then it follows it
+ * after a short pause. Each sentence's words come from the clip's word times, paired
+ * with the translated text; when they do not pair up, they are spread evenly.
+ */
+export function spokenSentences(translated, clipDur, wordTimes = {}) {
+    let cursor = 0;
+    const out = [];
+    for (const s of [...translated].sort((a, b) => (a.id ?? 0) - (b.id ?? 0))) {
+        const dur = s.id === undefined ? undefined : clipDur[String(s.id)];
+        if (!dur)
+            continue;
+        const at = Math.max(s.start, cursor);
+        cursor = at + dur + SPOKEN_GAP_S;
+        const tokens = s.text.trim().split(/\s+/).filter(Boolean);
+        const times = wordTimes[String(s.id)] ?? [];
+        const words = times.length === tokens.length
+            ? tokens.map((t, i) => [round(at + times[i][0]), round(at + times[i][1]), t])
+            : tokens.map((t, i) => [round(at + (i * dur) / tokens.length), round(at + ((i + 1) * dur) / tokens.length), t]);
+        out.push({ ...s, end: round(at + dur), start: round(at), words });
+    }
+    return out;
+}

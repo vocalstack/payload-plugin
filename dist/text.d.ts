@@ -20,3 +20,10 @@ export declare function attachWords<T extends TranscriptSentence>(sentences: T[]
  * differ, the times are spread evenly across the sentence.
  */
 export declare function timedTokens(s: TranscriptSentence): TranscriptWord[];
+/**
+ * Translated sentences in the timing of their spoken track. The track keeps each
+ * sentence where it was said, unless the one before still runs: then it follows it
+ * after a short pause. Each sentence's words come from the clip's word times, paired
+ * with the translated text; when they do not pair up, they are spread evenly.
+ */
+export declare function spokenSentences(translated: TranscriptSentence[], clipDur: Record<string, number>, wordTimes?: Record<string, [number, number][]>): TranscriptSentence[];

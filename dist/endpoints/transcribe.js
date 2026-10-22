@@ -19,7 +19,7 @@ function serially(key, run) {
 /** Finished jobs being saved, so that every "done" signal for one job shares a single save. */
 const finishing = new Map();
 /** Whether the signed-in user may update this document, by the collection's own `access.update`. */
-async function canUpdate(req, collection, id) {
+export async function canUpdate(req, collection, id) {
     if (!req.user)
         return false;
     const access = req.payload.collections[collection]?.config.access.update;
@@ -31,6 +31,10 @@ async function canUpdate(req, collection, id) {
     const { totalDocs } = await req.payload.count({ collection, overrideAccess: true, req, where: { and: [{ id: { equals: id } }, result] } });
     return totalDocs > 0;
 }
+const merge = (current, patch) => ({
+    ...current,
+    ...(typeof patch === 'function' ? patch(current ?? {}) : patch),
+});
 export async function locate(req, collection, options, rowFields, readAs) {
     const id = req.routeParams?.id;
     const find = (overrideAccess) => req.payload.findByID({ id, collection, depth: 0, overrideAccess, req, user: req.user }).catch(() => null);
@@ -46,10 +50,12 @@ export async function locate(req, collection, options, rowFields, readAs) {
             return json({ error: 'Only audio files can be transcribed.' }, 400);
         return {
             data: upload.vocalstack ?? {},
+            doc,
             fileName: upload.filename ?? 'audio',
             name: upload.filename ?? `${collection} ${id}`,
             save: (patch) => serially(`${collection}:${id}`, async () => {
-                const vocalstack = { ...upload.vocalstack, ...patch };
+                const fresh = (typeof patch === 'function' ? (await find(true)) : null) ?? upload;
+                const vocalstack = merge(fresh.vocalstack, patch);
                 await req.payload.update({ id, collection, data: { vocalstack }, depth: 0, overrideAccess: true, req });
                 return vocalstack;
             }),
@@ -66,8 +72,10 @@ export async function locate(req, collection, options, rowFields, readAs) {
     const base = req.payload.config.serverURL || req.origin;
     return {
         data: row.vocalstack ?? {},
+        doc,
         fileName: 'audio',
         name: config.name?.({ doc, row }) ?? (typeof doc.title === 'string' && doc.title ? doc.title : `${collection} ${id}`),
+        row,
         save: (patch) => serially(`${collection}:${id}`, async () => {
             // Re-read so edits saved to other rows meanwhile are kept; arrays are written whole.
             const fresh = (await find(true)) ?? doc;
@@ -75,7 +83,7 @@ export async function locate(req, collection, options, rowFields, readAs) {
             const rows = (fresh[field] ?? []).map((r) => {
                 if (r.id !== rowId)
                     return r;
-                saved = { ...r.vocalstack, ...patch };
+                saved = merge(r.vocalstack, patch);
                 return { ...r, vocalstack: saved };
             });
             if (!saved)
@@ -149,9 +157,12 @@ async function saveTranscript(api, target, recordingId) {
         error: null,
         language: transcript.lang ?? transcript.sentences.find((s) => s.language)?.language ?? null,
         sentences,
+        // A new recording: translations and readings of the old one no longer match it.
+        speech: null,
         status: 'done',
         transcribedAt: new Date().toISOString(),
         transcript: transcriptText(sentences),
+        translations: null,
     });
     return { progress: 100, status: 'done', vocalstack };
 }
