@@ -2,6 +2,8 @@
 
 VocalStack for [Payload CMS](https://payloadcms.com) 3: a **Transcribe** button on every audio upload. The transcript is saved on the document as text plus timed sentences.
 
+Read more about the [VocalStack transcription plugin for Payload CMS](https://vocalstack.com/payload-cms-transcription-plugin/) on the [VocalStack website](https://vocalstack.com/).
+
 ## Install
 
 ```sh
