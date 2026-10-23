@@ -1,6 +1,6 @@
 {
   "name": "@vocalstack/payload",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "VocalStack for Payload CMS: a Transcribe button on every audio upload.",
   "license": "MIT",
   "type": "module",
