@@ -1,9 +1,9 @@
-import type { CollectionConfig, Config, Field, Plugin } from 'payload'
+import type { CollectionAfterReadHook, CollectionConfig, Config, Field, Plugin } from 'payload'
 
-import type { ArrayRow, VocalStackPluginOptions, VoiceFieldData } from './types.js'
+import type { ArrayRow, AudioFieldConfig, UploadDoc, VocalStackPluginOptions, VoiceFieldData } from './types.js'
 
 import { connectionEndpoints } from './endpoints/connection.js'
-import { speechEndpoints } from './endpoints/speech.js'
+import { refreshAfterRead, speechEndpoints } from './endpoints/speech.js'
 import { streamEndpoint } from './endpoints/stream.js'
 import { transcribeEndpoints } from './endpoints/transcribe.js'
 import { lookupEndpoints, voiceEndpoints } from './endpoints/voices.js'
@@ -128,6 +128,20 @@ function voiceFields(enabled: boolean): Field[] {
   ]
 }
 
+/** Readings still being made when a document is read: brought up to date after the response, for whoever reads next. */
+const readingsAfterRead =
+  (options: VocalStackPluginOptions, rowFields: AudioFieldConfig[], isUpload: boolean): CollectionAfterReadHook =>
+  ({ collection, doc, req }) => {
+    if (!doc?.id) return doc
+    if (isUpload) refreshAfterRead(req.payload, collection.slug, options, rowFields, doc.id, (doc as UploadDoc).vocalstack)
+    for (const { field } of rowFields) {
+      for (const row of (doc[field] as ArrayRow[] | undefined) ?? []) {
+        if (row?.id && row.vocalstack && typeof row.vocalstack === 'object') refreshAfterRead(req.payload, collection.slug, options, rowFields, doc.id, row.vocalstack, { field, row: row.id })
+      }
+    }
+    return doc
+  }
+
 /** Add fields to the named array, looking through unnamed containers (rows, collapsibles, unnamed tabs). */
 function addToArray(fields: Field[], name: string, extra: Field[]): { fields: Field[]; found: boolean } {
   let found = false
@@ -192,6 +206,9 @@ export const vocalstackPlugin =
               ]
             : collection.endpoints,
           fields,
+          hooks: enabled
+            ? { ...collection.hooks, afterRead: [...(collection.hooks?.afterRead ?? []), readingsAfterRead(options, rowFields, isUpload)] }
+            : collection.hooks,
         }
       }),
       endpoints: enabled ? [...(config.endpoints ?? []), ...connectionEndpoints(options), ...lookupEndpoints(options)] : config.endpoints,

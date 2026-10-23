@@ -1,3 +1,5 @@
+import { after } from 'next/server.js';
+import { createLocalReq } from 'payload';
 import { DEFAULT_API_URL, UNAVAILABLE, VocalStackAPI, VocalStackAPIError } from '../api.js';
 import { readingsSlug } from '../readings.js';
 import { resolveAPIKey } from '../settings.js';
@@ -152,6 +154,112 @@ function settle(speech, track, translation) {
         state: 'sealed',
     };
 }
+/** Readings VocalStack is still making, or finished ones whose file is not kept yet. */
+function waiting(data, readings) {
+    const all = Object.entries(data.speech ?? {});
+    return {
+        pending: all.filter(([, s]) => s.state === 'queued' || s.state === 'running'),
+        // Made before readings were kept, or a download that failed.
+        unkept: readings ? all.filter(([, s]) => s.state === 'sealed' && !s.audio) : [],
+    };
+}
+/**
+ * Bring readings up to date from VocalStack, and keep each finished one's file (once;
+ * after that VocalStack is not asked for it again). The field as saved.
+ */
+async function refresh(req, api, readings, target, key) {
+    const { pending, unkept } = waiting(target.data, readings);
+    if ((!pending.length && !unkept.length) || !target.data.recordingId)
+        return target.data;
+    const next = {};
+    if (pending.length) {
+        const tracks = await api.voiceTracks(target.data.recordingId);
+        for (const [lang, speech] of pending) {
+            const settled = settle(speech, trackFor(tracks, lang, speech), target.data.translations?.[lang]);
+            if (settled.state !== speech.state || settled.error !== speech.error || settled.done !== speech.done)
+                next[lang] = settled;
+        }
+    }
+    if (readings) {
+        for (const [lang, speech] of [...unkept, ...Object.entries(next)]) {
+            if (keeping.has(`${key}:${lang}`))
+                continue;
+            keeping.add(`${key}:${lang}`);
+            try {
+                next[lang] = await keepReading(req, api, readings, target, lang, next[lang] ?? speech);
+            }
+            catch {
+                // Not now: it is still playable from VocalStack, and the next look tries again.
+            }
+            finally {
+                keeping.delete(`${key}:${lang}`);
+            }
+        }
+    }
+    if (!Object.keys(next).length)
+        return target.data;
+    const losers = [];
+    const saved = await target.save((current) => {
+        const merged = { ...current.speech };
+        for (const [lang, s] of Object.entries(next)) {
+            // Kept by an overlapping request meanwhile (another server): theirs stays, ours goes.
+            const theirs = current.speech?.[lang]?.audio;
+            if (theirs && s.audio && theirs.id !== s.audio.id) {
+                losers.push(s);
+                merged[lang] = { ...s, audio: theirs };
+            }
+            else
+                merged[lang] = s;
+        }
+        return { speech: merged };
+    });
+    for (const loser of losers)
+        await dropReading(req, readings, loser);
+    // Requests on other servers can still both keep a reading: whatever the document
+    // does not point to, for these languages of this recording, is a spare copy.
+    if (readings)
+        await sweepReadings(req, readings, saved, Object.keys(next));
+    return saved;
+}
+/** When each document's readings were last looked at here, so reads ask VocalStack now and then, not every time. */
+const lookedAt = new Map();
+const LOOK_EVERY_MS = 20_000;
+/**
+ * A document was read with readings still being made: bring them up to date after the
+ * response, so a reading is ready for listeners without an editor watching it finish.
+ */
+export function refreshAfterRead(payload, collection, options, rowFields, id, data, where) {
+    const readings = readingsSlug(options);
+    if (!data?.recordingId)
+        return;
+    const { pending, unkept } = waiting(data, readings);
+    if (!pending.length && !unkept.length)
+        return;
+    const key = `${collection}:${id}:${where?.row ?? ''}`;
+    if (Date.now() - (lookedAt.get(key) ?? 0) < LOOK_EVERY_MS)
+        return;
+    lookedAt.set(key, Date.now());
+    const work = async () => {
+        const req = await createLocalReq({ urlSuffix: where ? `?${new URLSearchParams(where)}` : '' }, payload);
+        req.routeParams = { id };
+        const apiKey = await resolveAPIKey(req, options);
+        if (!apiKey)
+            return;
+        const target = await locate(req, collection, options, rowFields, 'admin');
+        if (target instanceof Response)
+            return;
+        await refresh(req, new VocalStackAPI(apiKey, options.apiURL ?? DEFAULT_API_URL), readings, target, key);
+    };
+    const run = () => work().catch((err) => payload.logger.warn({ err, msg: `VocalStack: could not update the readings of ${key}` }));
+    try {
+        // On a request: after the response, kept alive until done.
+        after(run);
+    }
+    catch {
+        // Outside a request (a script): just carry on in the background.
+        void run();
+    }
+}
 /**
  * Translations of a transcript, and spoken readings of them, on the same document or
  * row as the transcript (`?field=&row=` as for transcribing):
@@ -287,69 +395,17 @@ export function speechEndpoints(collection, options, rowFields) {
                 const target = await locate(req, collection, options, rowFields, 'user');
                 if (target instanceof Response)
                     return target;
-                const all = Object.entries(target.data.speech ?? {});
-                const pending = all.filter(([, s]) => s.state === 'queued' || s.state === 'running');
-                // Finished readings whose file is not kept yet (made before readings were kept, or a download that failed).
-                const unkept = readings ? all.filter(([, s]) => s.state === 'sealed' && !s.audio) : [];
                 const answer = async (vocalstack) => json({ defaultVoice: await defaultVoice(req, target), vocalstack });
+                const { pending, unkept } = waiting(target.data, readings);
                 if ((!pending.length && !unkept.length) || !target.data.recordingId)
                     return answer(target.data);
                 const apiKey = await resolveAPIKey(req, options);
                 if (!apiKey)
                     return json({ code: 'not_connected', error: 'Connect VocalStack first.' }, 409);
                 try {
-                    const api = new VocalStackAPI(apiKey, apiURL);
-                    const next = {};
-                    if (pending.length) {
-                        const tracks = await api.voiceTracks(target.data.recordingId);
-                        for (const [lang, speech] of pending) {
-                            const settled = settle(speech, trackFor(tracks, lang, speech), target.data.translations?.[lang]);
-                            if (settled.state !== speech.state || settled.error !== speech.error || settled.done !== speech.done)
-                                next[lang] = settled;
-                        }
-                    }
-                    // Each finished reading is downloaded once and kept; after that VocalStack is not asked for it again.
-                    if (readings) {
-                        for (const [lang, speech] of [...unkept, ...Object.entries(next)]) {
-                            const key = `${collection}:${req.routeParams?.id}:${req.searchParams.get('row') ?? ''}:${lang}`;
-                            if (keeping.has(key))
-                                continue;
-                            keeping.add(key);
-                            try {
-                                const done = await keepReading(req, api, readings, target, lang, next[lang] ?? speech);
-                                next[lang] = done;
-                            }
-                            catch {
-                                // Not now: it is still playable from VocalStack, and the next look tries again.
-                            }
-                            finally {
-                                keeping.delete(key);
-                            }
-                        }
-                    }
-                    if (!Object.keys(next).length)
-                        return answer(target.data);
-                    const losers = [];
-                    const saved = await target.save((current) => {
-                        const merged = { ...current.speech };
-                        for (const [lang, s] of Object.entries(next)) {
-                            // Kept by an overlapping request meanwhile (another server): theirs stays, ours goes.
-                            const theirs = current.speech?.[lang]?.audio;
-                            if (theirs && s.audio && theirs.id !== s.audio.id) {
-                                losers.push(s);
-                                merged[lang] = { ...s, audio: theirs };
-                            }
-                            else
-                                merged[lang] = s;
-                        }
-                        return { speech: merged };
-                    });
-                    for (const loser of losers)
-                        await dropReading(req, readings, loser);
-                    // Requests on other servers can still both keep a reading: whatever the document
-                    // does not point to, for these languages of this recording, is a spare copy.
-                    if (readings)
-                        await sweepReadings(req, readings, saved, Object.keys(next));
+                    const key = `${collection}:${req.routeParams?.id}:${req.searchParams.get('row') ?? ''}`;
+                    lookedAt.set(key, Date.now());
+                    const saved = await refresh(req, new VocalStackAPI(apiKey, apiURL), readings, target, key);
                     return answer(saved);
                 }
                 catch (err) {

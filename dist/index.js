@@ -1,5 +1,5 @@
 import { connectionEndpoints } from './endpoints/connection.js';
-import { speechEndpoints } from './endpoints/speech.js';
+import { refreshAfterRead, speechEndpoints } from './endpoints/speech.js';
 import { streamEndpoint } from './endpoints/stream.js';
 import { transcribeEndpoints } from './endpoints/transcribe.js';
 import { lookupEndpoints, voiceEndpoints } from './endpoints/voices.js';
@@ -113,6 +113,20 @@ function voiceFields(enabled) {
         },
     ];
 }
+/** Readings still being made when a document is read: brought up to date after the response, for whoever reads next. */
+const readingsAfterRead = (options, rowFields, isUpload) => ({ collection, doc, req }) => {
+    if (!doc?.id)
+        return doc;
+    if (isUpload)
+        refreshAfterRead(req.payload, collection.slug, options, rowFields, doc.id, doc.vocalstack);
+    for (const { field } of rowFields) {
+        for (const row of doc[field] ?? []) {
+            if (row?.id && row.vocalstack && typeof row.vocalstack === 'object')
+                refreshAfterRead(req.payload, collection.slug, options, rowFields, doc.id, row.vocalstack, { field, row: row.id });
+        }
+    }
+    return doc;
+};
 /** Add fields to the named array, looking through unnamed containers (rows, collapsibles, unnamed tabs). */
 function addToArray(fields, name, extra) {
     let found = false;
@@ -176,6 +190,9 @@ export const vocalstackPlugin = (options = {}) => (config) => {
                     ]
                     : collection.endpoints,
                 fields,
+                hooks: enabled
+                    ? { ...collection.hooks, afterRead: [...(collection.hooks?.afterRead ?? []), readingsAfterRead(options, rowFields, isUpload)] }
+                    : collection.hooks,
             };
         }),
         endpoints: enabled ? [...(config.endpoints ?? []), ...connectionEndpoints(options), ...lookupEndpoints(options)] : config.endpoints,
