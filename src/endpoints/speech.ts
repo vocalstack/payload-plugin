@@ -16,6 +16,8 @@ const json = (body: unknown, status = 200) => Response.json(body, { status })
 const BATCH = 30
 const PARALLEL = 4
 const BUDGET_MS = 150_000
+// The translate endpoint answers sooner, so the editor sees the count go up as it goes.
+const STEP_MS = 20_000
 
 const LANG = /^[a-z]{2,3}(-[a-z0-9]+)?$/i
 
@@ -140,9 +142,10 @@ function settle(speech: Speech, track: undefined | VoiceTrack, translation: Tran
     return age < 120_000 ? speech : { ...speech, error: 'VocalStack has no reading of this language. Try again.', state: 'failed' }
   }
   if (track.state === 'failed') return { ...speech, error: track.error ?? 'The reading failed.', state: 'failed' }
-  if (track.state !== 'sealed') return { ...speech, error: null, state: track.state === 'queued' ? 'queued' : 'running' }
+  if (track.state !== 'sealed') return { ...speech, done: track.clips?.length ?? 0, error: null, state: track.state === 'queued' ? 'queued' : 'running' }
   return {
     ...speech,
+    done: null,
     durationS: track.durationS ?? null,
     error: null,
     renderedAt: new Date().toISOString(),
@@ -198,7 +201,7 @@ export function speechEndpoints(collection: CollectionSlug, options: VocalStackP
         const { api, target } = found
         const asked = await bodyOf(req, target.data.language)
         if (!asked) return json({ error: 'Name the languages to translate into.' }, 400)
-        const deadline = Date.now() + BUDGET_MS
+        const deadline = Date.now() + STEP_MS
         try {
           let more = false
           let data = target.data
@@ -289,7 +292,7 @@ export function speechEndpoints(collection: CollectionSlug, options: VocalStackP
             const tracks = await api.voiceTracks(target.data.recordingId)
             for (const [lang, speech] of pending) {
               const settled = settle(speech, trackFor(tracks, lang, speech), target.data.translations?.[lang])
-              if (settled.state !== speech.state || settled.error !== speech.error) next[lang] = settled
+              if (settled.state !== speech.state || settled.error !== speech.error || settled.done !== speech.done) next[lang] = settled
             }
           }
           // Each finished reading is downloaded once and kept; after that VocalStack is not asked for it again.

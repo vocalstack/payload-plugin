@@ -107,6 +107,8 @@ export type Translation = {
 export type SpeechState = 'failed' | 'queued' | 'running' | 'sealed'
 
 export type Speech = {
+  /** While it is made: how many sentences have been voiced so far. */
+  done?: null | number
   durationS?: null | number
   error?: null | string
   renderedAt?: null | string

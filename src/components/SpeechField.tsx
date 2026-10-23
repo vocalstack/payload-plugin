@@ -4,7 +4,7 @@ import { Button, toast, useConfig, useDocumentInfo, useForm, useFormFields } fro
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Languages, VoiceOption } from '../api.js'
-import type { Speech, SpeechResponse, Translation, VocalStackFieldData } from '../types.js'
+import type { Speech, SpeechResponse, TranscriptSentence, Translation, VocalStackFieldData } from '../types.js'
 
 import { BrandStyles } from './Brand.js'
 import { useAPI } from './useConnection.js'
@@ -27,7 +27,15 @@ const styles = `
   .vs-spin { display: inline-block; width: 10px; height: 10px; border: 2px solid var(--theme-elevation-200); border-top-color: var(--vs-accent);
     border-radius: 50%; animation: vs-spin .8s linear infinite; margin-right: 6px; vertical-align: -1px; }
   @keyframes vs-spin { to { transform: rotate(360deg); } }
+  .vs-bar { position: relative; height: 4px; border-radius: 2px; overflow: hidden; background: var(--theme-elevation-100); }
+  .vs-bar span { position: absolute; inset: 0 auto 0 0; min-width: 6%; border-radius: 2px; background: var(--vs-accent); transition: width .6s ease-out; }
+  .vs-bar span::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent);
+    animation: vs-sweep 1.4s ease-in-out infinite; }
+  @keyframes vs-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
+  @media (prefers-reduced-motion: reduce) { .vs-spin, .vs-bar span::after { animation: none; } }
 `
+
+const TRANSLATING = 'Translating…'
 
 type Props = { field?: string; path?: string }
 
@@ -52,6 +60,10 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
   const speech = (useFormFields(([fields]) => fields[`${group}speech`]?.value) ?? {}) as Record<string, Speech>
   const spoken = useFormFields(([fields]) => fields[`${group}language`]?.value) as string | undefined
   const recordingId = useFormFields(([fields]) => fields[`${group}recordingId`]?.value) as string | undefined
+  // As the server counts them: settled, numbered sentences with text.
+  const total = useFormFields(
+    ([fields]) => ((fields[`${group}sentences`]?.value ?? []) as TranscriptSentence[]).filter((s) => !s.draft && s.id !== undefined && s.text.trim()).length,
+  ) as number
 
   const [langs, setLangs] = useState<Languages>()
   const [defaultVoice, setDefaultVoice] = useState<null | string>(null)
@@ -117,7 +129,8 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
 
   const names = useMemo(() => new Map(langs?.languages.map((l) => [l.code, l.name])), [langs])
   const canSpeak = useMemo(() => new Set(langs?.voice), [langs])
-  const shown = [...new Set([...Object.keys(translations), ...Object.keys(speech)])].sort((a, b) => (names.get(a) ?? a).localeCompare(names.get(b) ?? b))
+  // Languages being added show up straight away, with their progress.
+  const shown = [...new Set([...Object.keys(translations), ...Object.keys(speech), ...Object.keys(working)])].sort((a, b) => (names.get(a) ?? a).localeCompare(names.get(b) ?? b))
   const speakable = shown.filter((l) => canSpeak.has(l)).join()
   useEffect(() => {
     for (const l of speakable.split(',')) if (l) loadVoices(l)
@@ -129,8 +142,9 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
     for (;;) {
       const res = await call<SpeechResponse>(`${base}/translate${query}`, { body: JSON.stringify({ langs: list }), method: 'POST' })
       apply(res.vocalstack)
-      if (!res.more) return
+      if (!res.more) break
     }
+    toast.success(`Translated into ${list.map((l) => names.get(l) ?? l).join(', ')}.`)
   }
 
   const run = async (list: string[], label: string, job: () => Promise<void>) => {
@@ -147,8 +161,9 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
   }
 
   const speak = (list: string[], voice?: string) =>
-    run(list, 'Translating…', async () => {
+    run(list, TRANSLATING, async () => {
       await translate(list.filter((l) => !translations[l]))
+      setWorking((w) => ({ ...w, ...Object.fromEntries(list.map((l) => [l, 'Asking VocalStack to read it aloud…'])) }))
       const res = await call<SpeechResponse>(`${base}/speak${query}`, { body: JSON.stringify({ langs: list, voice: voice || undefined }), method: 'POST' })
       apply(res.vocalstack)
       setDefaultVoice(res.defaultVoice ?? null)
@@ -182,19 +197,25 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
           <div className="vs-speech-row" key={lang}>
             <div>
               <strong>{names.get(lang) ?? lang}</strong>
-              <p className="vs-speech-muted">{t ? `${t.sentences.length} sentences translated` : 'Not translated'}</p>
+              <p className="vs-speech-muted">
+                {t && t.sentences.length < total ? `${t.sentences.length} of ${total} sentences translated` : t ? `${t.sentences.length} sentences translated` : busy === TRANSLATING ? 'Starting…' : 'Not translated'}
+              </p>
             </div>
             <div style={{ display: 'grid', gap: 6 }}>
-              {busy ? (
+              {busy === TRANSLATING ? (
+                <Progress done={t?.sentences.length ?? 0} label={TRANSLATING} total={total} />
+              ) : busy ? (
                 <span className="vs-speech-muted">
                   <span className="vs-spin" />
                   {busy}
                 </span>
               ) : s?.state === 'queued' || s?.state === 'running' ? (
-                <span className="vs-speech-muted">
-                  <span className="vs-spin" />
-                  {s.state === 'queued' ? 'Waiting to be read aloud…' : 'Being read aloud…'} ({voiceName(lang, s.voice)})
-                </span>
+                <Progress
+                  done={s.done ?? 0}
+                  label={`${s.state === 'queued' ? 'Waiting to be read aloud…' : 'Being read aloud…'} (${voiceName(lang, s.voice)})`}
+                  since={s.requestedAt}
+                  total={t?.sentences.length ?? 0}
+                />
               ) : s?.state === 'sealed' ? (
                 <>
                   <audio
@@ -239,9 +260,34 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
         exclude={new Set([...shown, ...(spoken ? [spoken] : [])])}
         langs={langs}
         onSpeak={(list) => speak(list)}
-        onTranslate={(list) => run(list, 'Translating…', () => translate(list))}
+        onTranslate={(list) => run(list, TRANSLATING, () => translate(list))}
       />
       {error && <p className="vs-speech-error">{error}</p>}
+    </div>
+  )
+}
+
+/** Work under way: the share of sentences done, counted up as each step is saved, and the time it has taken. */
+const Progress: React.FC<{ done: number; label: string; since?: string; total: number }> = ({ done, label, since, total }) => {
+  const [started] = useState(() => (since ? new Date(since).getTime() : Date.now()))
+  const [, tick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => tick((n) => n + 1), 1000)
+    return () => clearInterval(t)
+  }, [])
+  const s = Math.max(0, Math.floor((Date.now() - started) / 1000))
+  const elapsed = s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`
+  done = Math.min(done, total)
+  const share = total ? done / total : 0
+  return (
+    <div style={{ display: 'grid', gap: 4 }}>
+      <div aria-valuemax={total} aria-valuemin={0} aria-valuenow={done} className="vs-bar" role="progressbar">
+        <span style={{ width: `${share * 100}%` }} />
+      </div>
+      <span className="vs-speech-muted">
+        <span className="vs-spin" />
+        {label} {total ? `${done} of ${total} sentences` : ''} · {elapsed}
+      </span>
     </div>
   )
 }

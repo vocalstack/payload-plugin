@@ -10,6 +10,8 @@ const json = (body, status = 200) => Response.json(body, { status });
 const BATCH = 30;
 const PARALLEL = 4;
 const BUDGET_MS = 150_000;
+// The translate endpoint answers sooner, so the editor sees the count go up as it goes.
+const STEP_MS = 20_000;
 const LANG = /^[a-z]{2,3}(-[a-z0-9]+)?$/i;
 /** The transcript's sentences that can be translated: settled, numbered, with text. */
 const translatable = (data) => (Array.isArray(data.sentences) ? data.sentences : []).filter((s) => !s.draft && s.id !== undefined && s.text.trim());
@@ -139,9 +141,10 @@ function settle(speech, track, translation) {
     if (track.state === 'failed')
         return { ...speech, error: track.error ?? 'The reading failed.', state: 'failed' };
     if (track.state !== 'sealed')
-        return { ...speech, error: null, state: track.state === 'queued' ? 'queued' : 'running' };
+        return { ...speech, done: track.clips?.length ?? 0, error: null, state: track.state === 'queued' ? 'queued' : 'running' };
     return {
         ...speech,
+        done: null,
         durationS: track.durationS ?? null,
         error: null,
         renderedAt: new Date().toISOString(),
@@ -199,7 +202,7 @@ export function speechEndpoints(collection, options, rowFields) {
                 const asked = await bodyOf(req, target.data.language);
                 if (!asked)
                     return json({ error: 'Name the languages to translate into.' }, 400);
-                const deadline = Date.now() + BUDGET_MS;
+                const deadline = Date.now() + STEP_MS;
                 try {
                     let more = false;
                     let data = target.data;
@@ -301,7 +304,7 @@ export function speechEndpoints(collection, options, rowFields) {
                         const tracks = await api.voiceTracks(target.data.recordingId);
                         for (const [lang, speech] of pending) {
                             const settled = settle(speech, trackFor(tracks, lang, speech), target.data.translations?.[lang]);
-                            if (settled.state !== speech.state || settled.error !== speech.error)
+                            if (settled.state !== speech.state || settled.error !== speech.error || settled.done !== speech.done)
                                 next[lang] = settled;
                         }
                     }
