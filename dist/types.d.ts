@@ -67,15 +67,36 @@ export type VocalStackPluginOptions = {
      */
     voices?: VoiceCollectionConfig[];
     /**
-     * The VocalStack voice (`clone:<id>`, `F1`, …) a transcript's translations are spoken in
-     * by default, e.g. the cloned voice of the person speaking. Nothing: VocalStack's default.
+     * Let the site's visitors ask for a transcript in their own language: it is translated,
+     * read aloud where VocalStack has a voice for it, and kept on the document (and the
+     * readings collection) like an editor's. Off by default. `true` allows every language
+     * VocalStack translates; see {@link ListenerOptions}.
      */
-    speechVoice?: (args: {
+    listeners?: boolean | ListenerOptions;
+    /**
+     * Whether a transcript is read in its speakers' cloned voices or in synthetic ones, decided by
+     * the site (e.g. from the person speaking: `cloned` when they agreed to voice cloning). Answer
+     * nothing to leave it to the transcript's own toggle. When set, the toggle is not shown.
+     */
+    voiceMode?: (args: {
         collection: CollectionSlug;
         doc: Record<string, unknown>;
         req: PayloadRequest;
         row?: ArrayRow;
-    }) => Promise<string | undefined> | string | undefined;
+    }) => Promise<undefined | VoiceMode> | undefined | VoiceMode;
+};
+export type ListenerOptions = {
+    /** Languages visitors may ask for. Default: every language VocalStack translates. */
+    languages?: string[];
+    /** Read new languages aloud too, where VocalStack has a voice for them. Default `true`. */
+    speak?: boolean;
+    /** Who may ask for a new language. Default: anyone who may read the document. */
+    access?: (args: {
+        lang: string;
+        req: PayloadRequest;
+    }) => boolean | Promise<boolean>;
+    /** New languages one visitor (by IP address) may ask for in an hour, on this server. Default 10. */
+    perHour?: number;
 };
 export type VoiceCollectionConfig = {
     collection: CollectionSlug;
@@ -109,9 +130,18 @@ export type VoiceFieldData = {
 export type Translation = {
     /** The transcript's sentences (same ids and times), their text translated. */
     sentences: TranscriptSentence[];
-    translatedAt: string;
+    translatedAt: null | string;
+    /**
+     * Asked for and not finished: the server carries on translating (when the document is
+     * read, or its progress asked for) until every sentence is done, with no one watching.
+     */
+    pending?: boolean;
+    /** Why translating stopped, when it failed for good. */
+    error?: null | string;
+    requestedAt?: null | string;
 };
-export type SpeechState = 'failed' | 'queued' | 'running' | 'sealed';
+/** `translating`: asked for, waiting for its translation to finish before VocalStack reads it. */
+export type SpeechState = 'failed' | 'queued' | 'running' | 'sealed' | 'translating';
 export type Speech = {
     /** While it is made: how many sentences have been voiced so far. */
     done?: null | number;
@@ -122,7 +152,9 @@ export type Speech = {
     /** Once sealed: the translated sentences in the spoken track's timing, with their words. */
     sentences?: null | TranscriptSentence[];
     state: SpeechState;
-    /** The voice it is spoken in; `null` for VocalStack's default. */
+    /** Read in speakers' cloned voices, or in stock (synthetic) ones. */
+    cast?: null | VoiceMode;
+    /** VocalStack's key for the voices it is read in (e.g. `cast:-1=M1`); `null` until VocalStack says. */
     voice: null | string;
     /** Once sealed: the reading's MP3, saved once in the readings upload collection and served from there. */
     audio?: null | {
@@ -173,7 +205,11 @@ export type VocalStackFieldData = {
     translations?: null | Record<string, Translation>;
     /** Spoken translations, by language code. */
     speech?: null | Record<string, Speech>;
+    /** The voices readings of this transcript are made in. Default `synthetic`. */
+    voices?: null | VoiceMode;
 };
+/** `cloned`: each speaker's own cloned voice, where they have one; `synthetic`: VocalStack's stock voices. */
+export type VoiceMode = 'cloned' | 'synthetic';
 /** [start, end, text], seconds. */
 export type TranscriptWord = [number, number, string];
 export type TranscriptSentence = {
@@ -210,10 +246,35 @@ export type ConnectionResponse = {
     /** `options`: the key is in the plugin config; `admin`: connected from the admin panel. */
     source?: 'admin' | 'options';
 };
+/** Where one language of a transcript stands, for a listener: what the listen endpoint answers. */
+export type ListenStatus = {
+    lang: string;
+    /** `ready`: it can be read (and heard, when `speech` is `ready`). `none`: never asked for. */
+    state: 'failed' | 'none' | 'ready' | 'translating';
+    /** Sentences translated so far, and in all. */
+    done: number;
+    total: number;
+    error?: null | string;
+    /** Whether VocalStack reads this language aloud. */
+    voice: boolean;
+    speech?: {
+        /** Sentences read so far (while `reading`). */
+        done?: null | number;
+        /** The reading's MP3, kept in the site's own storage, once ready. */
+        audio?: null | string;
+        error?: null | string;
+        state: 'failed' | 'reading' | 'ready' | 'waiting';
+    } | null;
+    /** Changes whenever the translation or the reading does: a cache key for the text and audio. */
+    version: string;
+};
 /** What the translate and speak endpoints answer. */
 export type SpeechResponse = {
-    /** The voice readings use unless one is picked (`speechVoice`); `null`: VocalStack's default. */
-    defaultVoice?: null | string;
+    /** The voices readings are made in now, and whether the site decides it (`voiceMode`) rather than the toggle. */
+    voiceMode?: {
+        fixed: boolean;
+        mode: VoiceMode;
+    };
     /** The translate endpoint ran out of time; call it again to carry on. */
     more?: boolean;
     vocalstack: VocalStackFieldData;

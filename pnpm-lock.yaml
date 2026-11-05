@@ -7,6 +7,10 @@ settings:
 importers:
 
   .:
+    dependencies:
+      '@vocalstack/js-sdk':
+        specifier: 2.0.0-alpha.1
+        version: 2.0.0-alpha.1
     devDependencies:
       '@payloadcms/ui':
         specifier: 3.80.0
@@ -614,6 +618,13 @@ packages:
 
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
+
+  '@vocalstack/contract@1.0.0-alpha.1':
+    resolution: {integrity: sha512-ZcCjga5LL8Kjh7KtuH9V7W0qC+TqIL5gpKCl2JCcnX+bD1zCd4DoWyPcFtnlcqLrp63cc/a/RsHnbg/2eZLkEg==}
+
+  '@vocalstack/js-sdk@2.0.0-alpha.1':
+    resolution: {integrity: sha512-D9yV7hV4xwBusf0wioTKpzlJXtCfNA0r9LgYZ4oegi9OCP6BtQKG5Ns9oN2pUS3LbkDPRGnzIeNR8aOa5LGjoA==}
+    engines: {node: '>=20'}
 
   ajv@8.17.1:
     resolution: {integrity: sha512-B/gBuNg5SiMTrPkC+A2+cW0RszwxYmn6VYxB/inlBStS5nx6xHIt/ehKRhIMhqusl7a8LjQoZnjCs5vhwxOQ1g==}
@@ -1253,6 +1264,9 @@ packages:
     resolution: {integrity: sha512-vIYeF1u3CjlhAFekPPAk2h/Kv4T3mAkMox5OymRiJQB0spDP10LHvt+K7G9Ny6NuuMAb25/6n1qyUjAcGNf/AA==}
     engines: {node: '>= 6'}
 
+  zod@4.6.7:
+    resolution: {integrity: sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==}
+
 snapshots:
 
   '@apidevtools/json-schema-ref-parser@11.9.3':
@@ -1759,6 +1773,18 @@ snapshots:
 
   '@types/trusted-types@2.0.7':
     optional: true
+
+  '@vocalstack/contract@1.0.0-alpha.1':
+    dependencies:
+      zod: 4.6.7
+
+  '@vocalstack/js-sdk@2.0.0-alpha.1':
+    dependencies:
+      '@vocalstack/contract': 1.0.0-alpha.1
+      ws: 8.22.0
+    transitivePeerDependencies:
+      - bufferutil
+      - utf-8-validate
 
   ajv@8.17.1:
     dependencies:
@@ -2388,3 +2414,5 @@ snapshots:
   ws@8.22.0: {}
 
   yaml@1.10.3: {}
+
+  zod@4.6.7: {}

@@ -6,8 +6,6 @@ import { lookupEndpoints, voiceEndpoints } from './endpoints/voices.js';
 import { readingsCollection, readingsSlug } from './readings.js';
 import { settingsGlobal } from './settings.js';
 export { spokenSentences, timedTokens, transcriptText } from './text.js';
-/** The voice to read translations in (`clone:<id>`), once a person's cloned voice is ready. */
-export const clonedVoiceKey = (data) => data?.state === 'ready' && data.voiceId ? `clone:${data.voiceId}` : undefined;
 const isAudioDoc = (data) => typeof data?.mimeType === 'string' && data.mimeType.startsWith('audio/');
 /** An upload collection that can hold audio: `audio/*`, a wildcard, or no restriction at all. */
 function acceptsAudio(collection) {
@@ -68,6 +66,8 @@ function transcriptionFields(enabled, options, target) {
                 { name: 'translations', type: 'json', ...hidden },
                 // { [lang]: { voice, state, …, sentences } }: translations read aloud, in the reading's timing.
                 { name: 'speech', type: 'json', ...hidden },
+                // Readings in speakers' cloned voices, or in stock ones (set from the translations panel).
+                { name: 'voices', type: 'select', defaultValue: 'synthetic', options: ['synthetic', 'cloned'], ...hidden },
                 ...(enabled
                     ? [
                         {

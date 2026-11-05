@@ -5,11 +5,12 @@ import { randomUUID } from 'node:crypto'
 
 import type { VoiceCollectionConfig, VoiceFieldData, VoiceSource, VoiceState, VocalStackPluginOptions } from '../types.js'
 
-import { type Languages, type Voice, DEFAULT_API_URL, VocalStackAPI, VocalStackAPIError } from '../api.js'
+import { type Voice, DEFAULT_API_URL, VocalStackAPI, VocalStackAPIError } from '../api.js'
+import { forListeners, languageList, listenerOptions } from '../languages.js'
 import { resolveAPIKey } from '../settings.js'
 import { apiError, canUpdate } from './transcribe.js'
 
-const json = (body: unknown, status = 200) => Response.json(body, { status })
+const json = (body: unknown, status = 200, headers?: Record<string, string>) => Response.json(body, { headers, status })
 
 // VocalStack clones from 30 s to 120 s of speech (a clip is at most 120 s).
 const MIN_SAMPLE_S = 30
@@ -27,6 +28,20 @@ const fieldData = (v: Voice): VoiceFieldData => ({
   voiceId: v.id,
 })
 
+/** A trial voice, as the panel follows it. */
+const trialOf = (v: Voice) => ({ error: v.error ?? null, id: v.id, progress: v.progress, state: v.state })
+
+/** Delete a trial voice; a kept one is never deleted this way. */
+async function dropTrial(api: VocalStackAPI, id: string) {
+  if (!id) return
+  const voice = await api.voice(id).catch(() => null)
+  if (voice?.draft) await api.deleteVoice(id).catch(() => undefined)
+}
+
+// Picked from a recording, as in the VocalStack dashboard: at least 5 s makes a voice, at most 60 s.
+export const PICK_MIN_S = 5
+export const PICK_MAX_S = 60
+
 const EMPTY: VoiceFieldData = { consentAt: null, createdAt: null, error: null, progress: null, sampleS: null, state: 'none', voiceId: null }
 
 /**
@@ -38,6 +53,9 @@ const EMPTY: VoiceFieldData = { consentAt: null, createdAt: null, error: null, p
  *   GET    /:id/vocalstack/voice/sources    recordings to take the sample from
  *   GET    /:id/vocalstack/voice/clip       a stretch of one of them, to hear before cloning (?recording=&startS=&endS=)
  *   GET    /:id/vocalstack/voice/preview    the voice speaking (?lang=&format=ogg|caf)
+ *   POST   /:id/vocalstack/voice/trial      a trial voice from picked sentences { recordingId, speaker, spans, replace? }
+ *   GET    /:id/vocalstack/voice/trial      ?voice= where it stands; …/trial/preview?voice=&lang=&format= hear it
+ *   POST   /:id/vocalstack/voice/trial/keep { voice, name, consent } keep it as their voice; DELETE …/trial?voice= drop it
  * A sample is only ever taken from the recordings `config.recordings` offers for that document.
  */
 export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStackPluginOptions): Endpoint[] {
@@ -185,6 +203,105 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
       },
     },
     {
+      // A trial voice from sentences of one of their recordings, to hear before keeping it.
+      method: 'post',
+      path: '/:id/vocalstack/voice/trial',
+      handler: async (req) => {
+        const found = await open(req, 'create')
+        if (found instanceof Response) return found
+        const { api, doc, id } = found
+        const body = (await req.json?.().catch(() => ({}))) as { recordingId?: unknown; replace?: unknown; spans?: unknown; speaker?: unknown }
+        const spans = (Array.isArray(body.spans) ? body.spans : [])
+          .map((s: { end?: unknown; start?: unknown }) => ({ end: Number(s?.end), start: Number(s?.start) }))
+          .filter((s) => Number.isFinite(s.start) && s.end > s.start)
+        const total = spans.reduce((t, s) => t + (s.end - s.start), 0)
+        if (typeof body.recordingId !== 'string' || !Number.isInteger(body.speaker) || total < PICK_MIN_S - 0.05 || total > PICK_MAX_S + 0.5) {
+          return json({ error: `Pick ${PICK_MIN_S} to ${PICK_MAX_S} seconds of their speech.` }, 400)
+        }
+        if (!(await ownRecording(req, doc, body.recordingId))) return json({ error: 'That recording is not one of theirs.' }, 403)
+        try {
+          const voice = await api.voiceFromSpeaker(
+            { draft: true, name: nameOf(req, doc), recordingId: body.recordingId, spans, speaker: body.speaker as number },
+            `payload:${collection}:${id}:trial:${randomUUID()}`,
+          )
+          // The trial it replaces (other samples picked) is not wanted any more.
+          if (typeof body.replace === 'string' && body.replace !== voice.id) await dropTrial(api, body.replace)
+          return json({ voice: trialOf(voice) }, 201)
+        } catch (err) {
+          return apiError(err)
+        }
+      },
+    },
+    {
+      method: 'get',
+      path: '/:id/vocalstack/voice/trial',
+      handler: async (req) => {
+        const found = await open(req, 'create')
+        if (found instanceof Response) return found
+        try {
+          const voice = await found.api.voice(req.searchParams.get('voice') ?? '')
+          if (!voice.draft) return json({ error: 'Not a trial voice.' }, 404)
+          return json({ voice: trialOf(voice) })
+        } catch (err) {
+          return apiError(err)
+        }
+      },
+    },
+    {
+      method: 'get',
+      path: '/:id/vocalstack/voice/trial/preview',
+      handler: async (req) => {
+        const found = await open(req, 'hear')
+        if (found instanceof Response) return found
+        const format = req.searchParams.get('format') === 'caf' ? 'caf' : 'ogg'
+        try {
+          const voice = await found.api.voice(req.searchParams.get('voice') ?? '')
+          if (!voice.draft) return json({ error: 'Not a trial voice.' }, 404)
+          const res = await found.api.voicePreview(voice.id, req.searchParams.get('lang') ?? undefined, format)
+          if (res.status === 202) return json({ pending: true }, 202)
+          if (!res.ok) return json({ error: `VocalStack answered ${res.status}` }, res.status >= 500 ? 502 : res.status)
+          return new Response(res.body, { headers: { 'cache-control': 'private, max-age=600', 'content-type': res.headers.get('content-type') ?? 'audio/ogg' } })
+        } catch (err) {
+          return apiError(err)
+        }
+      },
+    },
+    {
+      // Keep the trial as their voice (with their permission); the voice they had before goes.
+      method: 'post',
+      path: '/:id/vocalstack/voice/trial/keep',
+      handler: async (req) => {
+        const found = await open(req, 'create')
+        if (found instanceof Response) return found
+        const { api, doc, id } = found
+        const body = (await req.json?.().catch(() => ({}))) as { consent?: unknown; name?: unknown; voice?: unknown }
+        if (body.consent !== true) return json({ error: 'Confirm you have their permission to clone their voice.' }, 400)
+        if (typeof body.voice !== 'string') return json({ error: 'Which voice?' }, 400)
+        const name = (typeof body.name === 'string' && body.name.trim() ? body.name.trim() : nameOf(req, doc)).slice(0, 60)
+        try {
+          const trial = await api.voice(body.voice)
+          if (!trial.draft) return json({ error: 'Not a trial voice.' }, 404)
+          const voice = await api.keepVoice(trial.id, name)
+          const previous = (doc.vocalstackVoice as null | VoiceFieldData | undefined)?.voiceId
+          const data = await save(req, id, { ...fieldData(voice), consentAt: new Date().toISOString() })
+          if (previous && previous !== voice.id) await api.deleteVoice(previous).catch(() => undefined)
+          return json({ name: nameOf(req, doc), vocalstackVoice: data })
+        } catch (err) {
+          return apiError(err)
+        }
+      },
+    },
+    {
+      method: 'delete',
+      path: '/:id/vocalstack/voice/trial',
+      handler: async (req) => {
+        const found = await open(req, 'create')
+        if (found instanceof Response) return found
+        await dropTrial(found.api, req.searchParams.get('voice') ?? '')
+        return json({ ok: true })
+      },
+    },
+    {
       method: 'get',
       path: '/:id/vocalstack/voice/preview',
       handler: async (req) => {
@@ -207,18 +324,21 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
   ]
 }
 
-let languages: { at: number; value: Languages } | undefined
-
 /**
- * Shared admin lookups (signed in, and `options.access` when set):
- *   GET /vocalstack/languages                      what can be translated and spoken
- *   GET /vocalstack/voices?lang=&recording=        voices that can speak a language
+ * Shared lookups:
+ *   GET /vocalstack/languages                      what can be translated and spoken (public with `listeners` on)
+ *   GET /vocalstack/voices?lang=&recording=        voices that can speak a language (signed in, and `options.access`)
  */
 export function lookupEndpoints(options: VocalStackPluginOptions): Endpoint[] {
   const apiURL = options.apiURL ?? DEFAULT_API_URL
-  const api = async (req: PayloadRequest) => {
+  const listeners = listenerOptions(options)
+  const allowed = async (req: PayloadRequest): Promise<Response | undefined> => {
     if (!req.user) return json({ error: 'Sign in first.' }, 401)
     if (options.access && !(await options.access({ req }))) return json({ error: 'You may not use VocalStack here.' }, 403)
+  }
+  const api = async (req: PayloadRequest) => {
+    const refused = await allowed(req)
+    if (refused) return refused
     const apiKey = await resolveAPIKey(req, options)
     if (!apiKey) return json({ code: 'not_connected', error: 'Connect VocalStack first.' }, 409)
     return new VocalStackAPI(apiKey, apiURL)
@@ -229,14 +349,14 @@ export function lookupEndpoints(options: VocalStackPluginOptions): Endpoint[] {
       method: 'get',
       path: '/vocalstack/languages',
       handler: async (req) => {
-        const client = await api(req)
-        if (client instanceof Response) return client
-        try {
-          if (!languages || Date.now() - languages.at > 3600_000) languages = { at: Date.now(), value: await client.languages() }
-          return json(languages.value)
-        } catch (err) {
-          return apiError(err)
+        // Listeners pick from the languages the site offers them; editors see all of VocalStack's.
+        if (!req.user && listeners) {
+          return json(forListeners(await languageList(req, options), listeners), 200, { 'cache-control': 'public, max-age=3600, s-maxage=3600' })
         }
+        const refused = await allowed(req)
+        if (refused) return refused
+        if (!(await resolveAPIKey(req, options))) return json({ code: 'not_connected', error: 'Connect VocalStack first.' }, 409)
+        return json(await languageList(req, options))
       },
     },
     {

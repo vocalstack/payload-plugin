@@ -1,0 +1,21 @@
+import type { VoiceFieldData, VoiceSource } from '../types.js';
+/** As in the VocalStack dashboard: at least 5 s makes a voice, 20 s a steadier one, 25 s is plenty; 60 s at most. */
+export declare const PICK_MIN_S = 5;
+export declare const sampleStyles = "\n  .vs-steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 4px; }\n  .vs-step { border-top: 3px solid var(--theme-elevation-150); padding-top: 6px; font-size: 12px; color: var(--theme-elevation-500); }\n  .vs-step--on { border-color: var(--vs-accent); color: var(--theme-text); font-weight: 600; }\n  .vs-step--done { border-color: color-mix(in srgb, var(--vs-accent) 45%, transparent); }\n  .vs-sample { border: 1px solid var(--theme-elevation-150); border-radius: 8px; overflow: hidden; }\n  .vs-sample-body { padding: 10px 12px; display: grid; gap: 8px; }\n  .vs-sample-head { display: flex; justify-content: space-between; align-items: center; font-size: 12px; color: var(--theme-elevation-500); }\n  .vs-sample-text { font-size: 14px; line-height: 1.45; min-height: 2.9em; }\n  .vs-sample-play { display: flex; align-items: center; gap: 10px; }\n  .vs-play { width: 34px; height: 34px; flex: none; border-radius: 50%; border: 0; background: var(--vs-accent); color: #fff; cursor: pointer; font-size: 12px; }\n  .vs-play:disabled { opacity: .5; cursor: default; }\n  .vs-wave { flex: 1; display: flex; align-items: center; gap: 2px; height: 28px; min-width: 0; }\n  .vs-wave span { flex: 1; border-radius: 1px; background: var(--theme-elevation-250); }\n  .vs-wave span.on { background: var(--vs-accent); }\n  .vs-sample-use { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--theme-elevation-150);\n    background: var(--theme-elevation-50); font-size: 14px; cursor: pointer; }\n  .vs-pager { display: flex; gap: 4px; }\n  .vs-pager button { border: 0; background: none; color: var(--theme-text); cursor: pointer; font-size: 16px; padding: 0 6px; }\n  .vs-pager button:disabled { opacity: .3; cursor: default; }\n  .vs-meter { position: relative; height: 6px; border-radius: 3px; background: var(--theme-elevation-100); overflow: hidden; }\n  .vs-meter span { position: absolute; inset: 0 auto 0 0; background: var(--vs-accent); transition: width .3s; }\n  .vs-meter-marks { position: relative; height: 16px; font-size: 11px; color: var(--theme-elevation-500); }\n  .vs-meter-marks span { position: absolute; transform: translateX(-50%); }\n  .vs-chips { display: flex; flex-wrap: wrap; gap: 6px; }\n  .vs-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--theme-elevation-150); border-radius: 12px; padding: 2px 4px 2px 10px; font-size: 12px; }\n  .vs-chip button { border: 0; background: none; cursor: pointer; color: var(--theme-elevation-500); }\n  .vs-chips--none { border: 1px dashed var(--theme-elevation-200); border-radius: 12px; padding: 4px 10px; font-size: 12px; color: var(--theme-elevation-500); }\n";
+/**
+ * Clone a voice from sentences of one of the person's own transcribed recordings, as in the
+ * VocalStack dashboard: pick samples (or have them chosen), hear the voice, then name and keep it.
+ */
+export declare const VoiceFromRecording: React.FC<{
+    base: string;
+    name: string;
+    onCreated: (res: {
+        name?: string;
+        vocalstackVoice: VoiceFieldData;
+    }) => void;
+    sources: VoiceSource[];
+}>;
+/** Record them speaking, in the browser, as the sample to clone from. */
+export declare const RecordSample: React.FC<{
+    onRecorded: (file: File | undefined, seconds: number | undefined) => void;
+}>;

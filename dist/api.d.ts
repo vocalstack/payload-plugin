@@ -1,7 +1,10 @@
 /**
- * The handful of VocalStack API calls the plugin needs, on plain fetch (the
- * SDK is not on npm yet). Contract: https://api.vocalstack.com/v1/openapi.json
+ * The VocalStack API calls the plugin needs, made through the VocalStack JS SDK
+ * (`@vocalstack/js-sdk`). This adapter keeps the plugin's own shapes and one error
+ * type, so an engine that is down reads the same everywhere.
+ * Contract: https://api.vocalstack.com/v1/openapi.json
  */
+import { VocalStack } from '@vocalstack/js-sdk';
 export declare const DEFAULT_API_URL = "https://api.vocalstack.com";
 export declare const DEFAULT_DASHBOARD_URL = "https://app.vocalstack.com";
 export type JobState = 'cropping' | 'done' | 'failed' | 'fetching' | 'queued' | 'stopped' | 'transcribing';
@@ -50,6 +53,8 @@ export type Transcript = {
 };
 export type Voice = {
     createdAt: string;
+    /** A trial voice, to hear before it is kept. */
+    draft?: boolean;
     error?: null | string;
     id: string;
     name: string;
@@ -77,19 +82,21 @@ export type VoiceTrack = {
     lang: string;
     /** `queued`, `running`, `failed`, `sealed` (the track is ready), or `clips` (sentences only). */
     state: string;
+    /** `synthetic` or `cloned` (the API's voice modes); older APIs answer a voice name here, or nothing. */
     voice?: null | string;
     voiceKey: string;
     /** Each sentence's words as [start, end] within its clip, by sentence id. */
     wordTimes?: Record<string, [number, number][]>;
 };
+export type Language = {
+    code: string;
+    name: string;
+    native: string;
+    translation: boolean;
+    voice: boolean;
+};
 export type Languages = {
-    languages: {
-        code: string;
-        name: string;
-        native: string;
-        translation: boolean;
-        voice: boolean;
-    }[];
+    languages: Language[];
     translation: string[];
     voice: string[];
 };
@@ -100,20 +107,8 @@ export declare class VocalStackAPIError extends Error {
     constructor(status: number, code: string, message: string);
 }
 export declare class VocalStackAPI {
-    private apiKey;
-    private baseURL;
+    readonly sdk: VocalStack;
     constructor(apiKey: string, baseURL?: string);
-    /**
-     * The raw answer. An engine that is down or does not answer in time (an upgrade, an
-     * outage) is one error, `unavailable`, so the admin says so instead of hanging.
-     */
-    fetch(method: string, path: string, opts?: {
-        body?: BodyInit | object;
-        headers?: Record<string, string>;
-        redirect?: RequestRedirect;
-        timeoutMs?: number;
-    }): Promise<Response>;
-    private request;
     me(): Promise<Record<string, unknown>>;
     transcribeURL(url: string, opts: {
         idempotencyKey: string;
@@ -140,10 +135,16 @@ export declare class VocalStackAPI {
         lang: string;
         translations: Record<string, string>;
     }>;
-    /** Render spoken translations, one job per language, in `voice` (the default voice when left out). */
-    speak(recordingId: string, langs: string[], voice?: string): Promise<VoiceTrack[]>;
+    /**
+     * Render spoken translations, one job per language, in the recording's default cast: VocalStack
+     * picks each speaker's voice. `cloned` lets it use speakers' own cloned voices (each made with
+     * that speaker's permission); otherwise it reads in stock voices.
+     */
+    speak(recordingId: string, langs: string[], opts?: {
+        cloned?: boolean;
+    }): Promise<VoiceTrack[]>;
     voiceTracks(recordingId: string, lang?: string): Promise<VoiceTrack[]>;
-    /** A freshly signed address (an hour) of the recording's audio, or of a spoken translation's. */
+    /** An address of the recording's audio, or of a spoken translation's, that works for an hour or so. */
     audioURL(recordingId: string, opts: {
         format?: 'caf' | 'mp3' | 'ogg';
         kind: 'delivery' | 'voice';
@@ -158,6 +159,22 @@ export declare class VocalStackAPI {
         consent: boolean;
         name: string;
     }, idempotencyKey: string): Promise<Voice>;
+    /**
+     * Clone a speaker's voice from stretches of a transcribed recording (5–60 s in all). `draft`
+     * makes a trial voice to hear first; keep it with `keepVoice`, or delete it.
+     */
+    voiceFromSpeaker(opts: {
+        draft: boolean;
+        name: string;
+        recordingId: string;
+        spans: {
+            end: number;
+            start: number;
+        }[];
+        speaker: number;
+    }, idempotencyKey: string): Promise<Voice>;
+    /** Keep a trial voice, as `name`, with the speaker's permission. */
+    keepVoice(id: string, name: string): Promise<Voice>;
     deleteVoice(id: string): Promise<unknown>;
     availableVoices(lang: string, recordingId?: string): Promise<{
         lang: string;
@@ -165,7 +182,6 @@ export declare class VocalStackAPI {
     }>;
     /** The cloned voice speaking a few seconds of `lang`, Ogg/Opus or CAF. 202 while it is being made. */
     voicePreview(id: string, lang?: string, format?: 'caf' | 'ogg'): Promise<Response>;
-    private raise;
 }
 /** A short label for the connected account, from whatever `/v1/me` carries. */
 export declare function accountLabel(me: Record<string, unknown>): string | undefined;

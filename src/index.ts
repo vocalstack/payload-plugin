@@ -1,6 +1,6 @@
 import type { CollectionAfterReadHook, CollectionConfig, Config, Field, Plugin } from 'payload'
 
-import type { ArrayRow, AudioFieldConfig, UploadDoc, VocalStackPluginOptions, VoiceFieldData } from './types.js'
+import type { ArrayRow, AudioFieldConfig, UploadDoc, VocalStackPluginOptions } from './types.js'
 
 import { connectionEndpoints } from './endpoints/connection.js'
 import { refreshAfterRead, speechEndpoints } from './endpoints/speech.js'
@@ -12,10 +12,6 @@ import { settingsGlobal } from './settings.js'
 
 export type * from './types.js'
 export { spokenSentences, timedTokens, transcriptText } from './text.js'
-
-/** The voice to read translations in (`clone:<id>`), once a person's cloned voice is ready. */
-export const clonedVoiceKey = (data?: null | VoiceFieldData): string | undefined =>
-  data?.state === 'ready' && data.voiceId ? `clone:${data.voiceId}` : undefined
 
 const isAudioDoc = (data: Record<string, unknown> | undefined) => typeof data?.mimeType === 'string' && data.mimeType.startsWith('audio/')
 
@@ -81,6 +77,8 @@ function transcriptionFields(enabled: boolean, options: VocalStackPluginOptions,
         { name: 'translations', type: 'json', ...hidden },
         // { [lang]: { voice, state, …, sentences } }: translations read aloud, in the reading's timing.
         { name: 'speech', type: 'json', ...hidden },
+        // Readings in speakers' cloned voices, or in stock ones (set from the translations panel).
+        { name: 'voices', type: 'select', defaultValue: 'synthetic', options: ['synthetic', 'cloned'], ...hidden },
         ...(enabled
           ? [
               {

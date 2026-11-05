@@ -1,49 +1,24 @@
 'use client'
 
 import { Button, toast, useConfig, useDocumentInfo, useForm } from '@payloadcms/ui'
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { Languages } from '../api.js'
-import type { TranscriptSentence, VoiceFieldData, VoiceSource } from '../types.js'
+import type { VoiceFieldData, VoiceSource } from '../types.js'
 
 import { BrandStyles, Logo } from './Brand.js'
 import { useAPI, useConnection } from './useConnection.js'
+import { RecordSample, VoiceFromRecording } from './VoiceSamples.js'
 
 const POLL_MS = 3000
-const TARGET_S = 60
 const MIN_S = 30
-const MAX_S = 120
 
 const styles = `
-  .vs-voice-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--theme-elevation-150); border-radius: var(--style-radius-s, 4px);
-    background: var(--theme-input-bg, var(--theme-elevation-0)); font-size: 13px; line-height: 1.5; }
-  .vs-voice-line { display: flex; gap: 8px; width: 100%; padding: 6px 10px; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; font: inherit; }
-  .vs-voice-line:hover { background: var(--theme-elevation-50); }
-  .vs-voice-line--in { background: color-mix(in srgb, var(--vs-accent) 14%, transparent); }
-  .vs-voice-line--start { box-shadow: inset 3px 0 0 var(--vs-accent); }
-  .vs-voice-time { color: var(--theme-elevation-500); font-variant-numeric: tabular-nums; flex: none; }
   .vs-voice-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
   .vs-voice select, .vs-voice input[type=file] { width: 100%; font: inherit; }
   .vs-voice select { padding: 6px 8px; border: 1px solid var(--theme-elevation-150); border-radius: var(--style-radius-s, 4px);
     background: var(--theme-input-bg, var(--theme-elevation-0)); color: var(--theme-text); }
 `
-
-const clock = (s: number) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`
-
-/** Whole sentences from `start`, about a minute of them: VocalStack clones from 30–120 s. */
-function stretchFrom(sentences: TranscriptSentence[], start: number): { endS: number; ids: Set<number | undefined>; startS: number } {
-  const from = sentences[start]
-  const ids = new Set<number | undefined>()
-  let endS = from.end
-  for (let i = start; i < sentences.length; i++) {
-    const s = sentences[i]
-    if (s.end - from.start > MAX_S) break
-    ids.add(s.id)
-    endS = s.end
-    if (endS - from.start >= TARGET_S) break
-  }
-  return { endS, ids, startS: from.start }
-}
 
 /** Ogg/Opus where the browser plays it, else CAF (Safari). */
 const previewFormat = () => (typeof Audio !== 'undefined' && new Audio().canPlayType('audio/ogg; codecs=opus') ? 'ogg' : 'caf')
@@ -240,10 +215,8 @@ const CreateVoice: React.FC<{
 }> = ({ base, name, onCancel, onCreated }) => {
   const call = useAPI()
   const { serverURL, api } = useAPIBase()
-  const [tab, setTab] = useState<'file' | 'recording'>('recording')
+  const [tab, setTab] = useState<'file' | 'recording' | 'record'>('recording')
   const [sources, setSources] = useState<VoiceSource[]>()
-  const [sourceIdx, setSourceIdx] = useState(0)
-  const [start, setStart] = useState<number>()
   const [file, setFile] = useState<File>()
   const [fileS, setFileS] = useState<number>()
   const [consent, setConsent] = useState(false)
@@ -254,17 +227,13 @@ const CreateVoice: React.FC<{
     call<{ sources: VoiceSource[] }>(`${base}/sources`).then(
       (r) => {
         setSources(r.sources)
-        if (!r.sources.length) setTab('file')
+        if (!r.sources.length) setTab('record')
       },
       (err) => setError(err.message),
     )
   }, [base, call])
 
-  const source = sources?.[sourceIdx]
-  const sentences = useMemo(() => source?.sentences ?? [], [source])
-  const stretch = start !== undefined && sentences[start] ? stretchFrom(sentences, start) : undefined
-  const length = stretch ? stretch.endS - stretch.startS : tab === 'file' ? fileS : undefined
-  const longEnough = (length ?? 0) >= MIN_S - 1.5
+  const longEnough = (fileS ?? 0) >= MIN_S - 1.5
 
   const pick = (f: File | undefined) => {
     setFile(f)
@@ -275,24 +244,27 @@ const CreateVoice: React.FC<{
     a.onloadedmetadata = () => setFileS(a.duration)
   }
 
-  const create = async () => {
+  const switchTo = (next: typeof tab) => {
+    setTab(next)
+    setFile(undefined)
+    setFileS(undefined)
+    setError(undefined)
+  }
+
+  /** A recorded or uploaded sample: sent through the server to VocalStack. */
+  const upload = async () => {
+    if (!file) return
     setBusy(true)
     setError(undefined)
     try {
-      let res: { name?: string; vocalstackVoice: VoiceFieldData }
-      if (tab === 'recording' && source && stretch) {
-        res = await call(base, { body: JSON.stringify({ consent, endS: stretch.endS, recordingId: source.recordingId, startS: stretch.startS }), method: 'POST' })
-      } else if (file) {
-        const form = new FormData()
-        form.append('file', file)
-        form.append('_payload', JSON.stringify({ consent }))
-        const r = await fetch(`${serverURL}${api}${base}`, { body: form, credentials: 'include', method: 'POST' })
-        const body = await r.json().catch(() => ({}))
-        if (!r.ok) throw new Error(body.error ?? (r.status === 413 ? 'The sample is too large; use a shorter or compressed file.' : `Request failed (${r.status})`))
-        res = body
-      } else return
+      const form = new FormData()
+      form.append('file', file)
+      form.append('_payload', JSON.stringify({ consent }))
+      const r = await fetch(`${serverURL}${api}${base}`, { body: form, credentials: 'include', method: 'POST' })
+      const body = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(body.error ?? (r.status === 413 ? 'The sample is too large; use a shorter or compressed file.' : `Request failed (${r.status})`))
       toast.success('Voice created. It is training now.')
-      onCreated(res)
+      onCreated(body)
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -301,86 +273,61 @@ const CreateVoice: React.FC<{
   }
 
   const muted = { color: 'var(--theme-elevation-500)', fontSize: 13, margin: 0 }
-  const clipURL = stretch && source ? `${serverURL}${api}${base}/clip?${new URLSearchParams({ endS: String(stretch.endS), recording: source.recordingId, startS: String(stretch.startS) })}` : undefined
+  const tabs = [
+    ['recording', 'From a sermon'],
+    ['record', 'Record'],
+    ['file', 'Upload'],
+  ] as const
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>
       <div className="vs-voice-tabs">
-        <Button buttonStyle={tab === 'recording' ? 'primary' : 'secondary'} margin={false} onClick={() => setTab('recording')} size="small">
-          From a recording
-        </Button>
-        <Button buttonStyle={tab === 'file' ? 'primary' : 'secondary'} margin={false} onClick={() => setTab('file')} size="small">
-          Upload a sample
-        </Button>
+        {tabs.map(([key, label]) => (
+          <Button buttonStyle={tab === key ? 'primary' : 'secondary'} key={key} margin={false} onClick={() => switchTo(key)} size="small">
+            {label}
+          </Button>
+        ))}
       </div>
 
       {tab === 'recording' ? (
         !sources ? (
           <p style={muted}>{error ? '' : 'Looking for transcribed recordings…'}</p>
         ) : !sources.length ? (
-          <p style={muted}>No transcribed recordings of {name || 'them'} yet. Transcribe one, or upload a sample.</p>
+          <p style={muted}>No transcribed recordings of {name || 'them'} yet. Transcribe one, or record a sample.</p>
         ) : (
-          <>
-            {sources.length > 1 && (
-              <select
-                aria-label="Recording"
-                onChange={(e) => {
-                  setSourceIdx(Number(e.target.value))
-                  setStart(undefined)
-                }}
-                value={sourceIdx}
-              >
-                {sources.map((s, i) => (
-                  <option key={s.recordingId} value={i}>
-                    {s.label}
-                  </option>
-                ))}
-              </select>
-            )}
-            <p style={muted}>Click where {name || 'they'} start speaking alone, with no music or other voices. About a minute is taken from there.</p>
-            <div className="vs-voice-list">
-              {sentences.map((s, i) => (
-                <button
-                  className={`vs-voice-line${stretch?.ids.has(s.id) ? ' vs-voice-line--in' : ''}${i === start ? ' vs-voice-line--start' : ''}`}
-                  key={s.id ?? i}
-                  onClick={() => setStart(i)}
-                  type="button"
-                >
-                  <span className="vs-voice-time">{clock(s.start)}</span>
-                  <span>{s.text}</span>
-                </button>
-              ))}
-            </div>
-            {stretch && (
-              <>
-                <p style={muted}>
-                  {clock(stretch.startS)}–{clock(stretch.endS)} · {Math.round(stretch.endS - stretch.startS)} s{longEnough ? '' : ` (at least ${MIN_S} s needed)`}
-                </p>
-                <audio controls key={clipURL} preload="none" src={clipURL} style={{ width: '100%' }} />
-              </>
-            )}
-          </>
+          <VoiceFromRecording base={base} name={name} onCreated={onCreated} sources={sources} />
         )
       ) : (
         <>
-          <p style={muted}>
-            {MIN_S} s to 2 min of {name || 'them'} speaking alone, clearly, with no music. An MP3 or M4A of about a minute is ideal.
-          </p>
-          <input accept="audio/*" onChange={(e) => pick(e.target.files?.[0])} type="file" />
+          {tab === 'record' ? (
+            <RecordSample
+              onRecorded={(f, seconds) => {
+                setFile(f)
+                setFileS(seconds)
+              }}
+            />
+          ) : (
+            <>
+              <p style={muted}>
+                {MIN_S} s to 2 min of {name || 'them'} speaking alone, clearly, with no music. An MP3 or M4A of about a minute is ideal.
+              </p>
+              <input accept="audio/*" onChange={(e) => pick(e.target.files?.[0])} type="file" />
+            </>
+          )}
           {file && fileS !== undefined && !longEnough && <p style={{ ...muted, color: 'var(--theme-error-500)' }}>That is {Math.round(fileS)} s; at least {MIN_S} s is needed.</p>}
+          <label style={{ alignItems: 'flex-start', display: 'flex', fontSize: 13, gap: 8 }}>
+            <input checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 3 }} type="checkbox" />
+            <span>I have {name || 'their'}&rsquo;s permission to clone their voice.</span>
+          </label>
+          {error && <p style={{ ...muted, color: 'var(--theme-error-500)' }}>{error}</p>}
+          <div>
+            <Button disabled={busy || !consent || !longEnough || !file} margin={false} onClick={upload} size="small">
+              {busy ? 'Creating…' : 'Create voice'}
+            </Button>
+          </div>
         </>
       )}
-
-      <label style={{ alignItems: 'flex-start', display: 'flex', fontSize: 13, gap: 8 }}>
-        <input checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 3 }} type="checkbox" />
-        <span>I have {name || 'their'}&rsquo;s permission to clone their voice.</span>
-      </label>
-
-      {error && <p style={{ ...muted, color: 'var(--theme-error-500)' }}>{error}</p>}
-      <div style={{ display: 'flex', gap: 6 }}>
-        <Button disabled={busy || !consent || !longEnough || (tab === 'file' ? !file : !stretch)} margin={false} onClick={create} size="small">
-          {busy ? 'Creating…' : 'Create voice'}
-        </Button>
+      <div>
         <Button buttonStyle="secondary" disabled={busy} margin={false} onClick={onCancel} size="small">
           Cancel
         </Button>

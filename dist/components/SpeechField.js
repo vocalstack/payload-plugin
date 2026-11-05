@@ -12,6 +12,8 @@ const styles = `
     border-top: 1px solid var(--theme-elevation-100); font-size: 13px; }
   .vs-speech-row:first-of-type { border-top: 0; }
   .vs-speech-muted { color: var(--theme-elevation-500); font-size: 13px; margin: 0; }
+  .vs-speech-voices { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin: 4px 0; font-size: 13px; }
+  .vs-speech-voices label { display: inline-flex; gap: 6px; align-items: center; cursor: pointer; }
   .vs-speech-error { color: var(--theme-error-500); font-size: 13px; margin: 0; }
   .vs-speech select, .vs-speech input[type=search] { font: inherit; font-size: 13px; padding: 4px 6px; border: 1px solid var(--theme-elevation-150);
     border-radius: var(--style-radius-s, 4px); background: var(--theme-input-bg, var(--theme-elevation-0)); color: var(--theme-text); max-width: 100%; }
@@ -29,6 +31,8 @@ const styles = `
   @media (prefers-reduced-motion: reduce) { .vs-spin, .vs-bar span::after { animation: none; } }
 `;
 const TRANSLATING = 'Translating…';
+/** The most languages one recording may have, besides its spoken one (VocalStack's limit). */
+const LANGUAGE_LIMIT = 10;
 /** Translations of the transcript, and readings of them aloud: under the transcript once it is done. */
 export const SpeechField = ({ field, path = '' }) => {
     const { id, collectionSlug } = useDocumentInfo();
@@ -44,42 +48,49 @@ export const SpeechField = ({ field, path = '' }) => {
     const translations = (useFormFields(([fields]) => fields[`${group}translations`]?.value) ?? {});
     const speech = (useFormFields(([fields]) => fields[`${group}speech`]?.value) ?? {});
     const spoken = useFormFields(([fields]) => fields[`${group}language`]?.value);
-    const recordingId = useFormFields(([fields]) => fields[`${group}recordingId`]?.value);
+    const toggled = (useFormFields(([fields]) => fields[`${group}voices`]?.value) ?? 'synthetic');
+    // Decided by the site (e.g. the speaker's own setting), when the server says so.
+    const [decided, setDecided] = useState();
+    const voices = decided?.fixed ? decided.mode : toggled;
     // As the server counts them: settled, numbered sentences with text.
     const total = useFormFields(([fields]) => (fields[`${group}sentences`]?.value ?? []).filter((s) => !s.draft && s.id !== undefined && s.text.trim()).length);
     const [langs, setLangs] = useState();
-    const [defaultVoice, setDefaultVoice] = useState(null);
-    const [voices, setVoices] = useState({});
-    const [picked, setPicked] = useState({});
     const [working, setWorking] = useState({});
     const [error, setError] = useState();
     const timer = useRef(undefined);
     const base = `/${collectionSlug}/${id}/vocalstack`;
     // The server saved these; make them the form's saved state too, so Save keeps them.
     const apply = useCallback((data) => {
-        for (const key of ['translations', 'speech']) {
+        for (const key of ['translations', 'speech', 'voices']) {
             if (data && key in data)
                 dispatchFields({ type: 'UPDATE', initialValue: data[key], path: `${group}${key}`, value: data[key] });
         }
     }, [dispatchFields, group]);
-    const busySpeech = Object.values(speech).some((s) => s.state === 'queued' || s.state === 'running');
+    // Work the server carries on with: readings being made, and translations (and the readings waiting for them).
+    const busySpeech = Object.values(speech).some((s) => s.state === 'queued' || s.state === 'running' || s.state === 'translating') ||
+        Object.values(translations).some((t) => t.pending);
     const check = useCallback(async () => {
         clearTimeout(timer.current);
         try {
             const res = await call(`${base}/speak${query}`);
-            setDefaultVoice(res.defaultVoice ?? null);
+            if (res.voiceMode)
+                setDecided(res.voiceMode);
             apply(res.vocalstack);
             const before = speech;
             for (const [lang, s] of Object.entries(res.vocalstack.speech ?? {})) {
                 if (s.state === 'sealed' && before[lang]?.state !== 'sealed')
                     toast.success(`The ${lang.toUpperCase()} reading is ready.`);
             }
+            for (const [lang, t] of Object.entries(res.vocalstack.translations ?? {})) {
+                if (!t.pending && translations[lang]?.pending && !t.error)
+                    toast.success(`The ${lang.toUpperCase()} translation is ready.`);
+            }
             setError(undefined);
         }
         catch (err) {
             setError(err.message);
         }
-    }, [apply, base, call, query, speech]);
+    }, [apply, base, call, query, speech, translations]);
     useEffect(() => {
         if (!id)
             return;
@@ -93,33 +104,14 @@ export const SpeechField = ({ field, path = '' }) => {
             timer.current = setTimeout(check, POLL_MS);
         return () => clearTimeout(timer.current);
     }, [busySpeech, check, speech]);
-    const loadVoices = useCallback((lang) => {
-        if (voices[lang])
-            return;
-        setVoices((v) => ({ ...v, [lang]: [] }));
-        call(`/vocalstack/voices?${new URLSearchParams({ lang, ...(recordingId ? { recording: recordingId } : {}) })}`).then((r) => setVoices((v) => ({ ...v, [lang]: r.voices })), () => undefined);
-    }, [call, recordingId, voices]);
     const names = useMemo(() => new Map(langs?.languages.map((l) => [l.code, l.name])), [langs]);
     const canSpeak = useMemo(() => new Set(langs?.voice), [langs]);
     // Languages being added show up straight away, with their progress.
     const shown = [...new Set([...Object.keys(translations), ...Object.keys(speech), ...Object.keys(working)])].sort((a, b) => (names.get(a) ?? a).localeCompare(names.get(b) ?? b));
-    const speakable = shown.filter((l) => canSpeak.has(l)).join();
-    useEffect(() => {
-        for (const l of speakable.split(','))
-            if (l)
-                loadVoices(l);
-    }, [loadVoices, speakable]);
-    /** Translate until done (each call stops after a while and says whether there is more). */
-    const translate = async (list) => {
-        if (!list.length)
-            return;
-        for (;;) {
-            const res = await call(`${base}/translate${query}`, { body: JSON.stringify({ langs: list }), method: 'POST' });
-            apply(res.vocalstack);
-            if (!res.more)
-                break;
-        }
-        toast.success(`Translated into ${list.map((l) => names.get(l) ?? l).join(', ')}.`);
+    /** Add languages: the server translates them and, with `speak`, reads them aloud, with no one watching. */
+    const request = async (list, speak) => {
+        const res = await call(`${base}/request${query}`, { body: JSON.stringify({ langs: list, speak }), method: 'POST' });
+        apply(res.vocalstack);
     };
     const run = async (list, label, job) => {
         if (!list.length)
@@ -136,31 +128,49 @@ export const SpeechField = ({ field, path = '' }) => {
             setWorking((w) => Object.fromEntries(Object.entries(w).filter(([l]) => !list.includes(l))));
         }
     };
-    const speak = (list, voice) => run(list, TRANSLATING, async () => {
-        await translate(list.filter((l) => !translations[l]));
-        setWorking((w) => ({ ...w, ...Object.fromEntries(list.map((l) => [l, 'Asking VocalStack to read it aloud…'])) }));
-        const res = await call(`${base}/speak${query}`, { body: JSON.stringify({ langs: list, voice: voice || undefined }), method: 'POST' });
+    // VocalStack picks the voice.
+    const speak = (list) => run(list, 'Asking VocalStack to read it aloud…', async () => {
+        const res = await call(`${base}/speak${query}`, { body: JSON.stringify({ langs: list }), method: 'POST' });
         apply(res.vocalstack);
-        setDefaultVoice(res.defaultVoice ?? null);
     });
+    const [switching, setSwitching] = useState(false);
+    const setVoices = async (next) => {
+        if (next === voices)
+            return;
+        setSwitching(true);
+        setError(undefined);
+        try {
+            apply((await call(`${base}/voices${query}`, { body: JSON.stringify({ voices: next }), method: 'POST' })).vocalstack);
+        }
+        catch (err) {
+            setError(err.message);
+        }
+        finally {
+            setSwitching(false);
+        }
+    };
     const remove = (lang) => window.confirm(`Remove the ${names.get(lang) ?? lang} translation${speech[lang] ? ' and its reading' : ''}?`) &&
         run([lang], 'Removing…', async () => {
             apply((await call(`${base}/translate${withQuery({ lang })}`, { method: 'DELETE' })).vocalstack);
         });
-    const voiceName = (lang, key) => {
-        if (!key)
-            return 'VocalStack’s default voice';
-        return voices[lang]?.find((v) => v.id === key)?.name ?? (key.startsWith('clone:') ? 'a cloned voice' : key);
-    };
     if (!id)
         return null;
-    return (_jsxs("div", { className: "vs-brand vs-speech", children: [_jsx(BrandStyles, {}), _jsx("style", { children: styles }), _jsx("h4", { children: "Translations and readings" }), !shown.length && _jsx("p", { className: "vs-speech-muted", children: "Translate the transcript so listeners can read along, or hear it read aloud, in their language." }), shown.map((lang) => {
+    return (_jsxs("div", { className: "vs-brand vs-speech", children: [_jsx(BrandStyles, {}), _jsx("style", { children: styles }), _jsx("h4", { children: "Translations and readings" }), decided?.fixed ? (_jsxs("p", { className: "vs-speech-muted", style: { marginBottom: 8 }, children: ["Read aloud in ", _jsx("strong", { children: voices === 'cloned' ? 'cloned voices' : 'synthetic voices' }), ", as set for the person speaking.", voices === 'cloned' ? ' Where they have no cloned voice yet, a synthetic one reads.' : ''] })) : (_jsxs(_Fragment, { children: [_jsxs("div", { className: "vs-speech-voices", role: "radiogroup", "aria-label": "Voices", children: [_jsx("span", { className: "vs-speech-muted", children: "Read aloud in" }), ['synthetic', 'cloned'].map((mode) => (_jsxs("label", { children: [_jsx("input", { checked: voices === mode, disabled: switching, name: `${group}voices-mode`, onChange: () => setVoices(mode), type: "radio" }), mode === 'synthetic' ? 'Synthetic voices' : 'Cloned voices'] }, mode)))] }), _jsxs("p", { className: "vs-speech-muted", style: { marginBottom: 8 }, children: [voices === 'cloned'
+                                ? 'Each speaker is read in their own cloned voice where they have one (made with their permission), otherwise in a synthetic one.'
+                                : 'Readings use VocalStack’s synthetic voices.', ' ', "Applies to readings made from now on; read a language again to change one already made."] })] })), !shown.length && _jsx("p", { className: "vs-speech-muted", children: "Translate the transcript so listeners can read along, or hear it read aloud, in their language." }), shown.map((lang) => {
                 const t = translations[lang];
                 const s = speech[lang];
                 const busy = working[lang];
-                const voicesHere = voices[lang] ?? [];
-                return (_jsxs("div", { className: "vs-speech-row", children: [_jsxs("div", { children: [_jsx("strong", { children: names.get(lang) ?? lang }), _jsx("p", { className: "vs-speech-muted", children: t && t.sentences.length < total ? `${t.sentences.length} of ${total} sentences translated` : t ? `${t.sentences.length} sentences translated` : busy === TRANSLATING ? 'Starting…' : 'Not translated' })] }), _jsxs("div", { style: { display: 'grid', gap: 6 }, children: [busy === TRANSLATING ? (_jsx(Progress, { done: t?.sentences.length ?? 0, label: TRANSLATING, total: total })) : busy ? (_jsxs("span", { className: "vs-speech-muted", children: [_jsx("span", { className: "vs-spin" }), busy] })) : s?.state === 'queued' || s?.state === 'running' ? (_jsx(Progress, { done: s.done ?? 0, label: `${s.state === 'queued' ? 'Waiting to be read aloud…' : 'Being read aloud…'} (${voiceName(lang, s.voice)})`, since: s.requestedAt, total: t?.sentences.length ?? 0 })) : s?.state === 'sealed' ? (_jsxs(_Fragment, { children: [_jsx("audio", { controls: true, preload: "none", src: `${serverURL}${api}${base}/audio${withQuery({ lang, v: s.renderedAt ?? '' })}` }, s.renderedAt ?? ''), _jsxs("span", { className: "vs-speech-muted", children: ["Read by ", voiceName(lang, s.voice)] })] })) : s?.state === 'failed' ? (_jsxs("p", { className: "vs-speech-error", children: ["Reading failed: ", s.error ?? 'no reason given'] })) : !canSpeak.has(lang) ? (_jsxs("span", { className: "vs-speech-muted", children: ["VocalStack cannot read ", names.get(lang) ?? lang, " aloud yet."] })) : null, canSpeak.has(lang) && !busy && s?.state !== 'queued' && s?.state !== 'running' && (_jsxs("div", { style: { display: 'flex', flexWrap: 'wrap', gap: 6 }, children: [_jsxs("select", { "aria-label": "Voice", onChange: (e) => setPicked((p) => ({ ...p, [lang]: e.target.value })), value: picked[lang] ?? '', children: [_jsxs("option", { value: "", children: ["Default for this recording (", voiceName(lang, defaultVoice), ")"] }), voicesHere.map((v) => (_jsxs("option", { disabled: v.ready === false && v.cloned, value: v.id, children: [v.name, v.cloned ? ' (cloned)' : ''] }, v.id)))] }), _jsx(Button, { buttonStyle: "secondary", margin: false, onClick: () => speak([lang], picked[lang]), size: "small", children: s ? 'Read again' : 'Read aloud' })] }))] }), _jsx(Button, { buttonStyle: "secondary", disabled: Boolean(busy), margin: false, onClick: () => remove(lang), size: "small", children: "Remove" })] }, lang));
-            }), _jsx(AddLanguages, { busy: Object.keys(working).length > 0, canSpeak: canSpeak, exclude: new Set([...shown, ...(spoken ? [spoken] : [])]), langs: langs, onSpeak: (list) => speak(list), onTranslate: (list) => run(list, TRANSLATING, () => translate(list)) }), error && _jsx("p", { className: "vs-speech-error", children: error })] }));
+                return (_jsxs("div", { className: "vs-speech-row", children: [_jsxs("div", { children: [_jsx("strong", { children: names.get(lang) ?? lang }), _jsx("p", { className: "vs-speech-muted", children: t?.pending
+                                        ? 'Translating…'
+                                        : t?.error && !t.sentences.length
+                                            ? 'Not translated'
+                                            : t && t.sentences.length < total
+                                                ? `${t.sentences.length} of ${total} sentences translated`
+                                                : t
+                                                    ? `${t.sentences.length} sentences translated`
+                                                    : 'Not translated' })] }), _jsxs("div", { style: { display: 'grid', gap: 6 }, children: [t?.pending ? (_jsxs(_Fragment, { children: [_jsx(Progress, { done: t.sentences.length, label: TRANSLATING, since: t.requestedAt ?? undefined, total: total }), s?.state === 'translating' && _jsx("span", { className: "vs-speech-muted", children: "Read aloud once translated." }), t.error && _jsxs("span", { className: "vs-speech-muted", children: [t.error, " Trying again shortly."] })] })) : busy ? (_jsxs("span", { className: "vs-speech-muted", children: [_jsx("span", { className: "vs-spin" }), busy] })) : s?.state === 'queued' || s?.state === 'running' ? (_jsx(Progress, { done: s.done ?? 0, label: s.state === 'queued' ? 'Waiting to be read aloud…' : 'Being read aloud…', since: s.requestedAt, total: t?.sentences.length ?? 0 })) : s?.state === 'sealed' ? (_jsx("audio", { controls: true, preload: "none", src: `${serverURL}${api}${base}/audio${withQuery({ lang, v: s.renderedAt ?? '' })}` }, s.renderedAt ?? '')) : t?.error && !t.sentences.length ? (_jsxs("p", { className: "vs-speech-error", children: ["Translating failed: ", t.error] })) : s?.state === 'translating' ? (_jsxs("span", { className: "vs-speech-muted", children: [_jsx("span", { className: "vs-spin" }), "Waiting for VocalStack to read it aloud\u2026"] })) : s?.state === 'failed' ? (_jsxs("p", { className: "vs-speech-error", children: ["Reading failed: ", s.error ?? 'no reason given'] })) : !canSpeak.has(lang) ? (_jsxs("span", { className: "vs-speech-muted", children: ["VocalStack cannot read ", names.get(lang) ?? lang, " aloud yet."] })) : null, canSpeak.has(lang) && !busy && !t?.pending && (!s || s.state === 'failed' || (s.state === 'sealed' && (s.cast ?? 'synthetic') !== voices)) && (_jsx("div", { children: _jsx(Button, { buttonStyle: "secondary", margin: false, onClick: () => speak([lang]), size: "small", children: !s ? 'Read aloud' : s.state === 'failed' ? 'Try again' : `Read again in ${voices} voices` }) }))] }), _jsx(Button, { buttonStyle: "secondary", disabled: Boolean(busy), margin: false, onClick: () => remove(lang), size: "small", children: "Remove" })] }, lang));
+            }), _jsx(AddLanguages, { busy: Object.keys(working).length > 0, canSpeak: canSpeak, exclude: new Set([...shown, ...(spoken ? [spoken] : [])]), langs: langs, left: LANGUAGE_LIMIT - shown.filter((l) => l !== spoken).length, onAdd: (list, speakToo) => run(list, 'Starting…', () => request(list, speakToo)) }), error && _jsx("p", { className: "vs-speech-error", children: error })] }));
 };
 /** Work under way: the share of sentences done, counted up as each step is saved, and the time it has taken. */
 const Progress = ({ done, label, since, total }) => {
@@ -176,28 +186,27 @@ const Progress = ({ done, label, since, total }) => {
     const share = total ? done / total : 0;
     return (_jsxs("div", { style: { display: 'grid', gap: 4 }, children: [_jsx("div", { "aria-valuemax": total, "aria-valuemin": 0, "aria-valuenow": done, className: "vs-bar", role: "progressbar", children: _jsx("span", { style: { width: `${share * 100}%` } }) }), _jsxs("span", { className: "vs-speech-muted", children: [_jsx("span", { className: "vs-spin" }), label, " ", total ? `${done} of ${total} sentences` : '', " \u00B7 ", elapsed] })] }));
 };
-const AddLanguages = ({ busy, canSpeak, exclude, langs, onSpeak, onTranslate }) => {
+const AddLanguages = ({ busy, canSpeak, exclude, langs, left, onAdd }) => {
     const [open, setOpen] = useState(false);
     const [filter, setFilter] = useState('');
     const [chosen, setChosen] = useState([]);
     if (!langs)
         return null;
+    if (left <= 0) {
+        return (_jsxs("p", { className: "vs-speech-muted", style: { marginTop: 10 }, children: ["This recording has ", LANGUAGE_LIMIT, " languages, as many as one recording may have. Remove one to add another."] }));
+    }
     const options = langs.languages
         .filter((l) => l.translation && !exclude.has(l.code))
         .filter((l) => !filter || `${l.name} ${l.native} ${l.code}`.toLowerCase().includes(filter.toLowerCase()));
-    const go = async (fn) => {
+    const go = async (speak) => {
         const list = chosen;
         setChosen([]);
         setOpen(false);
-        await fn(list);
+        await onAdd(list, speak);
     };
     if (!open) {
         return (_jsx("div", { style: { marginTop: 10 }, children: _jsx(Button, { buttonStyle: "secondary", disabled: busy, margin: false, onClick: () => setOpen(true), size: "small", children: "Add languages" }) }));
     }
-    // A reading is at most a few languages at a time.
-    const speakable = chosen.filter((l) => canSpeak.has(l));
-    return (_jsxs("div", { style: { borderTop: '1px solid var(--theme-elevation-100)', marginTop: 10, paddingTop: 10 }, children: [_jsx("input", { onChange: (e) => setFilter(e.target.value), placeholder: "Find a language", type: "search", value: filter }), _jsx("div", { className: "vs-speech-langs", children: options.map((l) => (_jsxs("label", { children: [_jsx("input", { checked: chosen.includes(l.code), onChange: (e) => setChosen((c) => (e.target.checked ? [...c, l.code] : c.filter((x) => x !== l.code))), type: "checkbox" }), l.name, canSpeak.has(l.code) ? ' 🔊' : ''] }, l.code))) }), _jsx("p", { className: "vs-speech-muted", style: { marginBottom: 8 }, children: "\uD83D\uDD0A can also be read aloud. Translating a long recording takes a few minutes." }), _jsxs("div", { style: { display: 'flex', flexWrap: 'wrap', gap: 6 }, children: [_jsx(Button, { disabled: busy || !chosen.length, margin: false, onClick: () => go(onTranslate), size: "small", children: "Translate" }), _jsx(Button, { disabled: busy || !speakable.length || speakable.length > 3, margin: false, onClick: () => go(async (list) => {
-                            await onTranslate(list.filter((l) => !canSpeak.has(l)));
-                            await onSpeak(list.filter((l) => canSpeak.has(l)));
-                        }), size: "small", children: speakable.length > 3 ? 'Read aloud: 3 at a time' : 'Translate and read aloud' }), _jsx(Button, { buttonStyle: "secondary", margin: false, onClick: () => setOpen(false), size: "small", children: "Cancel" })] })] }));
+    const tooMany = chosen.length > left;
+    return (_jsxs("div", { style: { borderTop: '1px solid var(--theme-elevation-100)', marginTop: 10, paddingTop: 10 }, children: [_jsx("input", { onChange: (e) => setFilter(e.target.value), placeholder: "Find a language", type: "search", value: filter }), _jsx("div", { className: "vs-speech-langs", children: options.map((l) => (_jsxs("label", { children: [_jsx("input", { checked: chosen.includes(l.code), onChange: (e) => setChosen((c) => (e.target.checked ? [...c, l.code] : c.filter((x) => x !== l.code))), type: "checkbox" }), l.name, canSpeak.has(l.code) ? ' 🔊' : ''] }, l.code))) }), _jsxs("p", { className: tooMany ? 'vs-speech-error' : 'vs-speech-muted', style: { marginBottom: 8 }, children: ["\uD83D\uDD0A is read aloud too. ", left, " more language", left === 1 ? '' : 's', " can be added (", LANGUAGE_LIMIT, " at most per recording). VocalStack carries on translating and reading after you leave this page."] }), _jsxs("div", { style: { display: 'flex', flexWrap: 'wrap', gap: 6 }, children: [_jsx(Button, { disabled: busy || !chosen.length || tooMany, margin: false, onClick: () => go(true), size: "small", children: "Translate and read aloud" }), _jsx(Button, { buttonStyle: "secondary", disabled: busy || !chosen.length || tooMany, margin: false, onClick: () => go(false), size: "small", children: "Translate only" }), _jsx(Button, { buttonStyle: "secondary", margin: false, onClick: () => setOpen(false), size: "small", children: "Cancel" })] })] }));
 };

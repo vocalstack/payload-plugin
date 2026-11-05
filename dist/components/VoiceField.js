@@ -1,43 +1,18 @@
 'use client';
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import { Button, toast, useConfig, useDocumentInfo, useForm } from '@payloadcms/ui';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { BrandStyles, Logo } from './Brand.js';
 import { useAPI, useConnection } from './useConnection.js';
+import { RecordSample, VoiceFromRecording } from './VoiceSamples.js';
 const POLL_MS = 3000;
-const TARGET_S = 60;
 const MIN_S = 30;
-const MAX_S = 120;
 const styles = `
-  .vs-voice-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--theme-elevation-150); border-radius: var(--style-radius-s, 4px);
-    background: var(--theme-input-bg, var(--theme-elevation-0)); font-size: 13px; line-height: 1.5; }
-  .vs-voice-line { display: flex; gap: 8px; width: 100%; padding: 6px 10px; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; font: inherit; }
-  .vs-voice-line:hover { background: var(--theme-elevation-50); }
-  .vs-voice-line--in { background: color-mix(in srgb, var(--vs-accent) 14%, transparent); }
-  .vs-voice-line--start { box-shadow: inset 3px 0 0 var(--vs-accent); }
-  .vs-voice-time { color: var(--theme-elevation-500); font-variant-numeric: tabular-nums; flex: none; }
   .vs-voice-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
   .vs-voice select, .vs-voice input[type=file] { width: 100%; font: inherit; }
   .vs-voice select { padding: 6px 8px; border: 1px solid var(--theme-elevation-150); border-radius: var(--style-radius-s, 4px);
     background: var(--theme-input-bg, var(--theme-elevation-0)); color: var(--theme-text); }
 `;
-const clock = (s) => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
-/** Whole sentences from `start`, about a minute of them: VocalStack clones from 30–120 s. */
-function stretchFrom(sentences, start) {
-    const from = sentences[start];
-    const ids = new Set();
-    let endS = from.end;
-    for (let i = start; i < sentences.length; i++) {
-        const s = sentences[i];
-        if (s.end - from.start > MAX_S)
-            break;
-        ids.add(s.id);
-        endS = s.end;
-        if (endS - from.start >= TARGET_S)
-            break;
-    }
-    return { endS, ids, startS: from.start };
-}
 /** Ogg/Opus where the browser plays it, else CAF (Safari). */
 const previewFormat = () => (typeof Audio !== 'undefined' && new Audio().canPlayType('audio/ogg; codecs=opus') ? 'ogg' : 'caf');
 export const VoiceField = () => {
@@ -155,8 +130,6 @@ const CreateVoice = ({ base, name, onCancel, onCreated }) => {
     const { serverURL, api } = useAPIBase();
     const [tab, setTab] = useState('recording');
     const [sources, setSources] = useState();
-    const [sourceIdx, setSourceIdx] = useState(0);
-    const [start, setStart] = useState();
     const [file, setFile] = useState();
     const [fileS, setFileS] = useState();
     const [consent, setConsent] = useState(false);
@@ -166,14 +139,10 @@ const CreateVoice = ({ base, name, onCancel, onCreated }) => {
         call(`${base}/sources`).then((r) => {
             setSources(r.sources);
             if (!r.sources.length)
-                setTab('file');
+                setTab('record');
         }, (err) => setError(err.message));
     }, [base, call]);
-    const source = sources?.[sourceIdx];
-    const sentences = useMemo(() => source?.sentences ?? [], [source]);
-    const stretch = start !== undefined && sentences[start] ? stretchFrom(sentences, start) : undefined;
-    const length = stretch ? stretch.endS - stretch.startS : tab === 'file' ? fileS : undefined;
-    const longEnough = (length ?? 0) >= MIN_S - 1.5;
+    const longEnough = (fileS ?? 0) >= MIN_S - 1.5;
     const pick = (f) => {
         setFile(f);
         setFileS(undefined);
@@ -183,28 +152,28 @@ const CreateVoice = ({ base, name, onCancel, onCreated }) => {
         const a = new Audio(URL.createObjectURL(f));
         a.onloadedmetadata = () => setFileS(a.duration);
     };
-    const create = async () => {
+    const switchTo = (next) => {
+        setTab(next);
+        setFile(undefined);
+        setFileS(undefined);
+        setError(undefined);
+    };
+    /** A recorded or uploaded sample: sent through the server to VocalStack. */
+    const upload = async () => {
+        if (!file)
+            return;
         setBusy(true);
         setError(undefined);
         try {
-            let res;
-            if (tab === 'recording' && source && stretch) {
-                res = await call(base, { body: JSON.stringify({ consent, endS: stretch.endS, recordingId: source.recordingId, startS: stretch.startS }), method: 'POST' });
-            }
-            else if (file) {
-                const form = new FormData();
-                form.append('file', file);
-                form.append('_payload', JSON.stringify({ consent }));
-                const r = await fetch(`${serverURL}${api}${base}`, { body: form, credentials: 'include', method: 'POST' });
-                const body = await r.json().catch(() => ({}));
-                if (!r.ok)
-                    throw new Error(body.error ?? (r.status === 413 ? 'The sample is too large; use a shorter or compressed file.' : `Request failed (${r.status})`));
-                res = body;
-            }
-            else
-                return;
+            const form = new FormData();
+            form.append('file', file);
+            form.append('_payload', JSON.stringify({ consent }));
+            const r = await fetch(`${serverURL}${api}${base}`, { body: form, credentials: 'include', method: 'POST' });
+            const body = await r.json().catch(() => ({}));
+            if (!r.ok)
+                throw new Error(body.error ?? (r.status === 413 ? 'The sample is too large; use a shorter or compressed file.' : `Request failed (${r.status})`));
             toast.success('Voice created. It is training now.');
-            onCreated(res);
+            onCreated(body);
         }
         catch (err) {
             setError(err.message);
@@ -214,11 +183,15 @@ const CreateVoice = ({ base, name, onCancel, onCreated }) => {
         }
     };
     const muted = { color: 'var(--theme-elevation-500)', fontSize: 13, margin: 0 };
-    const clipURL = stretch && source ? `${serverURL}${api}${base}/clip?${new URLSearchParams({ endS: String(stretch.endS), recording: source.recordingId, startS: String(stretch.startS) })}` : undefined;
-    return (_jsxs("div", { style: { display: 'grid', gap: 10 }, children: [_jsxs("div", { className: "vs-voice-tabs", children: [_jsx(Button, { buttonStyle: tab === 'recording' ? 'primary' : 'secondary', margin: false, onClick: () => setTab('recording'), size: "small", children: "From a recording" }), _jsx(Button, { buttonStyle: tab === 'file' ? 'primary' : 'secondary', margin: false, onClick: () => setTab('file'), size: "small", children: "Upload a sample" })] }), tab === 'recording' ? (!sources ? (_jsx("p", { style: muted, children: error ? '' : 'Looking for transcribed recordings…' })) : !sources.length ? (_jsxs("p", { style: muted, children: ["No transcribed recordings of ", name || 'them', " yet. Transcribe one, or upload a sample."] })) : (_jsxs(_Fragment, { children: [sources.length > 1 && (_jsx("select", { "aria-label": "Recording", onChange: (e) => {
-                            setSourceIdx(Number(e.target.value));
-                            setStart(undefined);
-                        }, value: sourceIdx, children: sources.map((s, i) => (_jsx("option", { value: i, children: s.label }, s.recordingId))) })), _jsxs("p", { style: muted, children: ["Click where ", name || 'they', " start speaking alone, with no music or other voices. About a minute is taken from there."] }), _jsx("div", { className: "vs-voice-list", children: sentences.map((s, i) => (_jsxs("button", { className: `vs-voice-line${stretch?.ids.has(s.id) ? ' vs-voice-line--in' : ''}${i === start ? ' vs-voice-line--start' : ''}`, onClick: () => setStart(i), type: "button", children: [_jsx("span", { className: "vs-voice-time", children: clock(s.start) }), _jsx("span", { children: s.text })] }, s.id ?? i))) }), stretch && (_jsxs(_Fragment, { children: [_jsxs("p", { style: muted, children: [clock(stretch.startS), "\u2013", clock(stretch.endS), " \u00B7 ", Math.round(stretch.endS - stretch.startS), " s", longEnough ? '' : ` (at least ${MIN_S} s needed)`] }), _jsx("audio", { controls: true, preload: "none", src: clipURL, style: { width: '100%' } }, clipURL)] }))] }))) : (_jsxs(_Fragment, { children: [_jsxs("p", { style: muted, children: [MIN_S, " s to 2 min of ", name || 'them', " speaking alone, clearly, with no music. An MP3 or M4A of about a minute is ideal."] }), _jsx("input", { accept: "audio/*", onChange: (e) => pick(e.target.files?.[0]), type: "file" }), file && fileS !== undefined && !longEnough && _jsxs("p", { style: { ...muted, color: 'var(--theme-error-500)' }, children: ["That is ", Math.round(fileS), " s; at least ", MIN_S, " s is needed."] })] })), _jsxs("label", { style: { alignItems: 'flex-start', display: 'flex', fontSize: 13, gap: 8 }, children: [_jsx("input", { checked: consent, onChange: (e) => setConsent(e.target.checked), style: { marginTop: 3 }, type: "checkbox" }), _jsxs("span", { children: ["I have ", name || 'their', "\u2019s permission to clone their voice."] })] }), error && _jsx("p", { style: { ...muted, color: 'var(--theme-error-500)' }, children: error }), _jsxs("div", { style: { display: 'flex', gap: 6 }, children: [_jsx(Button, { disabled: busy || !consent || !longEnough || (tab === 'file' ? !file : !stretch), margin: false, onClick: create, size: "small", children: busy ? 'Creating…' : 'Create voice' }), _jsx(Button, { buttonStyle: "secondary", disabled: busy, margin: false, onClick: onCancel, size: "small", children: "Cancel" })] })] }));
+    const tabs = [
+        ['recording', 'From a sermon'],
+        ['record', 'Record'],
+        ['file', 'Upload'],
+    ];
+    return (_jsxs("div", { style: { display: 'grid', gap: 10 }, children: [_jsx("div", { className: "vs-voice-tabs", children: tabs.map(([key, label]) => (_jsx(Button, { buttonStyle: tab === key ? 'primary' : 'secondary', margin: false, onClick: () => switchTo(key), size: "small", children: label }, key))) }), tab === 'recording' ? (!sources ? (_jsx("p", { style: muted, children: error ? '' : 'Looking for transcribed recordings…' })) : !sources.length ? (_jsxs("p", { style: muted, children: ["No transcribed recordings of ", name || 'them', " yet. Transcribe one, or record a sample."] })) : (_jsx(VoiceFromRecording, { base: base, name: name, onCreated: onCreated, sources: sources }))) : (_jsxs(_Fragment, { children: [tab === 'record' ? (_jsx(RecordSample, { onRecorded: (f, seconds) => {
+                            setFile(f);
+                            setFileS(seconds);
+                        } })) : (_jsxs(_Fragment, { children: [_jsxs("p", { style: muted, children: [MIN_S, " s to 2 min of ", name || 'them', " speaking alone, clearly, with no music. An MP3 or M4A of about a minute is ideal."] }), _jsx("input", { accept: "audio/*", onChange: (e) => pick(e.target.files?.[0]), type: "file" })] })), file && fileS !== undefined && !longEnough && _jsxs("p", { style: { ...muted, color: 'var(--theme-error-500)' }, children: ["That is ", Math.round(fileS), " s; at least ", MIN_S, " s is needed."] }), _jsxs("label", { style: { alignItems: 'flex-start', display: 'flex', fontSize: 13, gap: 8 }, children: [_jsx("input", { checked: consent, onChange: (e) => setConsent(e.target.checked), style: { marginTop: 3 }, type: "checkbox" }), _jsxs("span", { children: ["I have ", name || 'their', "\u2019s permission to clone their voice."] })] }), error && _jsx("p", { style: { ...muted, color: 'var(--theme-error-500)' }, children: error }), _jsx("div", { children: _jsx(Button, { disabled: busy || !consent || !longEnough || !file, margin: false, onClick: upload, size: "small", children: busy ? 'Creating…' : 'Create voice' }) })] })), _jsx("div", { children: _jsx(Button, { buttonStyle: "secondary", disabled: busy, margin: false, onClick: onCancel, size: "small", children: "Cancel" }) })] }));
 };
 function useAPIBase() {
     const { config: { routes: { api }, serverURL, }, } = useConfig();

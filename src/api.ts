@@ -1,7 +1,11 @@
 /**
- * The handful of VocalStack API calls the plugin needs, on plain fetch (the
- * SDK is not on npm yet). Contract: https://api.vocalstack.com/v1/openapi.json
+ * The VocalStack API calls the plugin needs, made through the VocalStack JS SDK
+ * (`@vocalstack/js-sdk`). This adapter keeps the plugin's own shapes and one error
+ * type, so an engine that is down reads the same everywhere.
+ * Contract: https://api.vocalstack.com/v1/openapi.json
  */
+
+import { VocalStack, VocalStackError } from '@vocalstack/js-sdk'
 
 export const DEFAULT_API_URL = 'https://api.vocalstack.com'
 export const DEFAULT_DASHBOARD_URL = 'https://app.vocalstack.com'
@@ -40,6 +44,8 @@ export type Transcript = {
 
 export type Voice = {
   createdAt: string
+  /** A trial voice, to hear before it is kept. */
+  draft?: boolean
   error?: null | string
   id: string
   name: string
@@ -61,14 +67,17 @@ export type VoiceTrack = {
   lang: string
   /** `queued`, `running`, `failed`, `sealed` (the track is ready), or `clips` (sentences only). */
   state: string
+  /** `synthetic` or `cloned` (the API's voice modes); older APIs answer a voice name here, or nothing. */
   voice?: null | string
   voiceKey: string
   /** Each sentence's words as [start, end] within its clip, by sentence id. */
   wordTimes?: Record<string, [number, number][]>
 }
 
+export type Language = { code: string; name: string; native: string; translation: boolean; voice: boolean }
+
 export type Languages = {
-  languages: { code: string; name: string; native: string; translation: boolean; voice: boolean }[]
+  languages: Language[]
   translation: string[]
   voice: string[]
 }
@@ -85,81 +94,84 @@ export class VocalStackAPIError extends Error {
   }
 }
 
-export class VocalStackAPI {
-  constructor(
-    private apiKey: string,
-    private baseURL = DEFAULT_API_URL,
-  ) {}
+/** How long a call may take before VocalStack counts as unavailable. Translating and cloning are slow. */
+function timeoutFor(url: string, method = 'GET'): number {
+  const path = new URL(url).pathname
+  if (path.endsWith('/translation')) return 180_000
+  if (method === 'POST' && path === '/v1/voices') return 120_000
+  if (path.endsWith('/audio/clip') || path.endsWith('/preview')) return 60_000
+  return 30_000
+}
 
-  /**
-   * The raw answer. An engine that is down or does not answer in time (an upgrade, an
-   * outage) is one error, `unavailable`, so the admin says so instead of hanging.
-   */
-  async fetch(method: string, path: string, opts: { body?: BodyInit | object; headers?: Record<string, string>; redirect?: RequestRedirect; timeoutMs?: number } = {}): Promise<Response> {
-    const init: RequestInit = {
-      headers: { accept: 'application/json', authorization: `Bearer ${this.apiKey}`, ...opts.headers },
-      method,
-      redirect: opts.redirect,
-      signal: AbortSignal.timeout(opts.timeoutMs ?? 30_000),
-    }
-    if (opts.body instanceof FormData) init.body = opts.body
-    else if (opts.body !== undefined) {
-      init.body = JSON.stringify(opts.body)
-      ;(init.headers as Record<string, string>)['content-type'] = 'application/json'
-    }
-    let res: Response
-    try {
-      res = await fetch(`${this.baseURL}${path}`, init)
-    } catch {
-      throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
-    }
-    if (res.status === 502 || res.status === 504 || (res.status === 503 && !res.headers.get('content-type')?.includes('json'))) {
-      throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
-    }
-    return res
+/** One error type: an engine that is down or slow (an upgrade, an outage) is `unavailable`. */
+function toAPIError(err: unknown): VocalStackAPIError {
+  if (err instanceof VocalStackAPIError) return err
+  if (err instanceof VocalStackError) {
+    const down = err.code === 'unavailable' || (err.code === 'internal' && (err.status === 502 || err.status === 503 || err.status === 504))
+    if (down) return new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
+    return new VocalStackAPIError(err.status ?? 500, err.code, err.message)
   }
+  if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) return new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
+  return new VocalStackAPIError(500, 'http_error', err instanceof Error ? err.message : String(err))
+}
 
-  private async request<T>(method: string, path: string, body?: BodyInit | object, headers: Record<string, string> = {}, timeoutMs?: number): Promise<T> {
-    const res = await this.fetch(method, path, { body, headers, timeoutMs })
-    const data = await res.json().catch(() => undefined)
-    if (!res.ok) {
-      const err = (data?.error ?? data) as { code?: string; message?: string } | undefined
-      throw new VocalStackAPIError(res.status, err?.code ?? 'http_error', err?.message ?? `VocalStack answered ${res.status}`)
-    }
-    return data as T
+const call = async <T>(run: () => Promise<T>): Promise<T> => {
+  try {
+    return await run()
+  } catch (err) {
+    throw toAPIError(err)
+  }
+}
+
+export class VocalStackAPI {
+  readonly sdk: VocalStack
+
+  constructor(apiKey: string, baseURL = DEFAULT_API_URL) {
+    this.sdk = new VocalStack({
+      apiKey,
+      baseUrl: baseURL,
+      // One retry of a busy or restarting API; the admin and listeners ask again anyway.
+      maxRetries: 1,
+      fetch: (input, init) =>
+        fetch(input, { ...init, signal: init?.signal ?? AbortSignal.timeout(timeoutFor(String(input instanceof Request ? input.url : input), init?.method)) }),
+    })
   }
 
   me() {
-    return this.request<Record<string, unknown>>('GET', '/v1/me')
+    return call(() => this.sdk.me.get() as unknown as Promise<Record<string, unknown>>)
   }
 
   transcribeURL(url: string, opts: { idempotencyKey: string; name: string; spokenLanguage?: string }) {
-    return this.request<Transcription>(
-      'POST',
-      '/v1/transcriptions',
-      { name: opts.name, settings: opts.spokenLanguage ? { spokenLanguage: opts.spokenLanguage } : undefined, url },
-      { 'idempotency-key': opts.idempotencyKey },
+    return call(
+      () =>
+        this.sdk.transcriptions.create(
+          { name: opts.name, settings: opts.spokenLanguage ? { spokenLanguage: opts.spokenLanguage } : undefined, url } as never,
+          { idempotencyKey: opts.idempotencyKey },
+        ) as unknown as Promise<Transcription>,
     )
   }
 
   transcribeFile(file: Blob, fileName: string, opts: { idempotencyKey: string; name: string; spokenLanguage?: string }) {
-    const form = new FormData()
-    form.append('options', JSON.stringify({ name: opts.name, settings: opts.spokenLanguage ? { spokenLanguage: opts.spokenLanguage } : undefined }))
-    form.append('file', file, fileName)
-    return this.request<Transcription>('POST', '/v1/transcriptions', form, { 'idempotency-key': opts.idempotencyKey })
+    return call(
+      () =>
+        this.sdk.transcriptions.create(
+          { file, fileName, name: opts.name, settings: opts.spokenLanguage ? { spokenLanguage: opts.spokenLanguage } : undefined } as never,
+          { idempotencyKey: opts.idempotencyKey },
+        ) as unknown as Promise<Transcription>,
+    )
   }
 
   job(recordingId: string) {
-    return this.request<Job>('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/job`)
+    return call(() => this.sdk.jobs.get(recordingId) as unknown as Promise<Job>)
   }
 
   /** Stop a job before it is done. Its job fails with `stopped`; what was transcribed so far stays in VocalStack. */
   stop(recordingId: string, reason?: string) {
-    return this.request<unknown>('POST', `/v1/recordings/${encodeURIComponent(recordingId)}/stop`, { reason: reason ?? null })
+    return call(() => this.sdk.recordings.stop(recordingId, reason) as Promise<unknown>)
   }
 
   transcript(recordingId: string) {
-    return this.request<Transcript>('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/transcript`)
+    return call(() => this.sdk.recordings.transcript(recordingId) as unknown as Promise<Transcript>)
   }
 
   /**
@@ -167,10 +179,9 @@ export class VocalStackAPI {
    * answers only the sentences it translates in that call, so stored ones are read here.
    */
   async storedTranslations(recordingId: string, lang: string): Promise<Record<string, string>> {
-    const t = await this.request<{ sentences: { sentenceId: number; translations?: null | Record<string, string> }[] }>(
-      'GET',
-      `/v1/recordings/${encodeURIComponent(recordingId)}/transcript?lang=${encodeURIComponent(lang)}`,
-    )
+    const t = (await call(() => this.sdk.recordings.transcript(recordingId, { lang }))) as unknown as {
+      sentences?: { sentenceId: number; translations?: null | Record<string, string> }[]
+    }
     const out: Record<string, string> = {}
     for (const s of t.sentences ?? []) {
       const text = s.translations?.[lang]
@@ -180,76 +191,81 @@ export class VocalStackAPI {
   }
 
   languages() {
-    return this.request<Languages>('GET', '/v1/languages')
+    return call(() => this.sdk.languages.list() as unknown as Promise<Languages>)
   }
 
   /** Sentences translated into `lang`, by sentence id. Untranslated ones are translated now, which takes a while. */
   translation(recordingId: string, lang: string, sentenceIds: number[]) {
-    const q = new URLSearchParams({ lang, sentences: sentenceIds.join(',') })
-    return this.request<{ lang: string; translations: Record<string, string> }>('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/translation?${q}`, undefined, {}, 180_000)
+    return call(() => this.sdk.recordings.translation(recordingId, lang, sentenceIds))
   }
 
-  /** Render spoken translations, one job per language, in `voice` (the default voice when left out). */
-  speak(recordingId: string, langs: string[], voice?: string) {
-    return this.request<VoiceTrack[]>('POST', `/v1/recordings/${encodeURIComponent(recordingId)}/voice`, voice ? { langs, voice } : { langs })
+  /**
+   * Render spoken translations, one job per language, in the recording's default cast: VocalStack
+   * picks each speaker's voice. `cloned` lets it use speakers' own cloned voices (each made with
+   * that speaker's permission); otherwise it reads in stock voices.
+   */
+  async speak(recordingId: string, langs: string[], opts: { cloned?: boolean } = {}) {
+    const render = (body: object) => call(() => this.sdk.recordings.renderVoice(recordingId, body as never) as unknown as Promise<VoiceTrack[]>)
+    try {
+      return await render({ langs, voice: opts.cloned ? 'cloned' : 'synthetic' })
+    } catch (err) {
+      // An API from before `voice: 'synthetic' | 'cloned'` takes it for a voice id: there, consent turns clones on.
+      if (!(err instanceof VocalStackAPIError && err.status === 400 && /no voice '(cloned|synthetic)'/.test(err.message))) throw err
+      return render({ consent: opts.cloned ? true : undefined, langs })
+    }
   }
 
   voiceTracks(recordingId: string, lang?: string) {
-    return this.request<VoiceTrack[]>('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/voice${lang ? `?lang=${encodeURIComponent(lang)}` : ''}`)
+    return call(() => this.sdk.recordings.voice(recordingId, lang) as unknown as Promise<VoiceTrack[]>)
   }
 
-  /** A freshly signed address (an hour) of the recording's audio, or of a spoken translation's. */
+  /** An address of the recording's audio, or of a spoken translation's, that works for an hour or so. */
   async audioURL(recordingId: string, opts: { format?: 'caf' | 'mp3' | 'ogg'; kind: 'delivery' | 'voice'; lang?: string; voice?: string }): Promise<string> {
-    const q = new URLSearchParams({ format: opts.format ?? 'mp3', kind: opts.kind })
-    if (opts.lang) q.set('lang', opts.lang)
-    if (opts.voice) q.set('voice', opts.voice)
-    const res = await this.fetch('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/audio?${q}`, { redirect: 'manual' })
-    const location = res.headers.get('location')
-    if (res.status >= 300 && res.status < 400 && location) return new URL(location, this.baseURL).toString()
-    const data = (await res.json().catch(() => undefined)) as { code?: string; message?: string } | undefined
-    throw new VocalStackAPIError(res.ok ? 502 : res.status, data?.code ?? 'http_error', data?.message ?? `VocalStack answered ${res.status}`)
+    const format = opts.format ?? 'mp3'
+    if (opts.kind === 'delivery') return call(() => this.sdk.recordings.audioUrl(recordingId, { format, kind: 'delivery' }))
+    // A reading in a named voice: a short-lived media token carries the voice in the address.
+    const { token } = await call(() => this.sdk.recordings.mediaToken(recordingId))
+    return this.sdk.recordings.audioSrc(recordingId, { format, kind: 'voice', lang: opts.lang, media: token, voice: opts.voice })
   }
 
   /** A stretch of the recording as WAV (16 kHz mono), at most 120 s. */
-  async clip(recordingId: string, startS: number, endS: number): Promise<Response> {
-    const res = await this.fetch('GET', `/v1/recordings/${encodeURIComponent(recordingId)}/audio/clip?startS=${startS}&endS=${endS}`, { timeoutMs: 60_000 })
-    if (!res.ok) await this.raise(res)
-    return res
+  clip(recordingId: string, startS: number, endS: number): Promise<Response> {
+    return call(() => this.sdk.recordings.clip(recordingId, startS, endS))
   }
 
   voice(id: string) {
-    return this.request<Voice>('GET', `/v1/voices/${encodeURIComponent(id)}`)
+    return call(() => this.sdk.voices.get(id) as unknown as Promise<Voice>)
   }
 
   /** Clone a voice from a recorded sample (30 s or more). Needs the speaker's permission. */
   createVoice(sample: Blob, fileName: string, meta: { consent: boolean; name: string }, idempotencyKey: string) {
-    const form = new FormData()
-    form.append('meta', JSON.stringify(meta))
-    form.append('sample', sample, fileName)
-    return this.request<Voice>('POST', '/v1/voices', form, { 'idempotency-key': idempotencyKey }, 120_000)
+    return call(() => this.sdk.voices.create({ ...meta, fileName, sample } as never, { idempotencyKey }) as unknown as Promise<Voice>)
+  }
+
+  /**
+   * Clone a speaker's voice from stretches of a transcribed recording (5–60 s in all). `draft`
+   * makes a trial voice to hear first; keep it with `keepVoice`, or delete it.
+   */
+  voiceFromSpeaker(opts: { draft: boolean; name: string; recordingId: string; spans: { end: number; start: number }[]; speaker: number }, idempotencyKey: string) {
+    return call(() => this.sdk.voices.createFromSpeaker({ ...opts, consent: true, library: false } as never, { idempotencyKey }) as unknown as Promise<Voice>)
+  }
+
+  /** Keep a trial voice, as `name`, with the speaker's permission. */
+  keepVoice(id: string, name: string) {
+    return call(() => this.sdk.voices.update(id, { consent: true, draft: false, name } as never) as unknown as Promise<Voice>)
   }
 
   deleteVoice(id: string) {
-    return this.request<unknown>('DELETE', `/v1/voices/${encodeURIComponent(id)}`)
+    return call(() => this.sdk.voices.delete(id) as Promise<unknown>)
   }
 
   availableVoices(lang: string, recordingId?: string) {
-    const q = new URLSearchParams({ lang })
-    if (recordingId) q.set('recording', recordingId)
-    return this.request<{ lang: string; voices: VoiceOption[] }>('GET', `/v1/voices/available?${q}`)
+    return call(() => this.sdk.voices.available(lang, { recording: recordingId }) as unknown as Promise<{ lang: string; voices: VoiceOption[] }>)
   }
 
   /** The cloned voice speaking a few seconds of `lang`, Ogg/Opus or CAF. 202 while it is being made. */
   voicePreview(id: string, lang?: string, format: 'caf' | 'ogg' = 'ogg') {
-    const q = new URLSearchParams({ format })
-    if (lang) q.set('lang', lang)
-    return this.fetch('GET', `/v1/voices/${encodeURIComponent(id)}/preview?${q}`, { timeoutMs: 60_000 })
-  }
-
-  private async raise(res: Response): Promise<never> {
-    const data = (await res.json().catch(() => undefined)) as { code?: string; error?: { code?: string; message?: string }; message?: string } | undefined
-    const err = data?.error ?? data
-    throw new VocalStackAPIError(res.status, err?.code ?? 'http_error', err?.message ?? `VocalStack answered ${res.status}`)
+    return call(() => this.sdk.voices.clonePreview(id, { format, lang }))
   }
 }
 

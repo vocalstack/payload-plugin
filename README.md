@@ -35,10 +35,11 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
     - `sentences`: `[{ start, end, speaker, text }]` in seconds.
     - `status`, `language`, `error`, `recordingId`, `transcriptionId` and `transcribedAt`.
   - `POST /api/{collection}/:id/vocalstack/transcribe`, `POST …/vocalstack/stop`, `GET …/vocalstack/status` and `GET …/vocalstack/stream` (live progress as Server-Sent Events).
-- **Translations and readings**, under every finished transcript: translate it into any of 100 languages, and have the translation read aloud (in a cloned voice, or one of VocalStack's). Saved in the `vocalstack` group as:
-  - `translations`: `{ [lang]: { translatedAt, sentences } }`, the transcript's sentences (same ids and times) translated.
-  - `speech`: `{ [lang]: { voice, state, error, durationS, requestedAt, renderedAt, sentences } }`. `state` is `queued`, `running`, `failed` or `sealed`; once sealed, `sentences` are the translation in the reading's own timing, with words, for a read-along player.
-  - `POST …/vocalstack/translate { langs }` (answers `more: true` when it stopped for time; call again), `DELETE …/vocalstack/translate?lang=`, `POST …/vocalstack/speak { langs, voice? }`, `GET …/vocalstack/speak`, and the public `GET …/vocalstack/audio?lang=`, which redirects to the reading's MP3 (or, with no `lang` or the spoken one, the recording's audio) for anyone who may read the document.
+- **Translations and readings**, under every finished transcript: translate it into up to 10 of VocalStack's 100 languages (VocalStack's limit per recording), and have each translation read aloud where VocalStack has a voice for it. VocalStack picks the voices; a toggle on each transcript chooses between **synthetic** voices and the speakers' own **cloned** voices (where they have one, made with their permission), saved as `voices`. One click in the admin does both; the server carries on until it is done, with no one watching. Saved in the `vocalstack` group as:
+  - `translations`: `{ [lang]: { translatedAt, sentences, pending?, error?, requestedAt? } }`, the transcript's sentences (same ids and times) translated. `pending` while the server is still translating it.
+  - `speech`: `{ [lang]: { voice, state, error, durationS, requestedAt, renderedAt, sentences, audio } }`. `state` is `translating` (waiting for its translation), `queued`, `running`, `failed` or `sealed`; once sealed, `sentences` are the translation in the reading's own timing, with words, for a read-along player, and `audio` is the MP3 kept in your storage.
+  - `POST …/vocalstack/voices { voices: 'synthetic' | 'cloned' }`, `POST …/vocalstack/request { langs, speak? }` (translate, and read aloud unless `speak: false`; carried on by the server), `POST …/vocalstack/translate { langs }` (one step; answers `more: true` when it stopped for time), `DELETE …/vocalstack/translate?lang=`, `POST …/vocalstack/speak { langs }`, `GET …/vocalstack/speak`, and the public `GET …/vocalstack/audio?lang=`, which redirects to the reading's MP3 (or, with no `lang` or the spoken one, the recording's audio) for anyone who may read the document.
+- **Languages for listeners** (opt in with `listeners`): visitors pick any language VocalStack offers, and it is made for them and kept for everyone after. `GET /api/vocalstack/languages` is public, `POST …/vocalstack/listen { lang }` asks for a language and `GET …/vocalstack/listen?lang=` says where it stands; see below.
 - **Voices** (opt in with `voices`): documents of a collection of people get a sidebar panel to clone that person's voice from a minute of a recording they speak in, or from an uploaded sample, with their permission. Kept in a hidden `vocalstackVoice` group (`voiceId`, `state`: `none`/`training`/`ready`/`failed`, `progress`, `error`, `sampleS`, `consentAt`, `createdAt`), with `GET`/`POST`/`DELETE /api/{collection}/:id/vocalstack/voice`, `…/voice/sources` and `…/voice/preview`.
 - **Settings → VocalStack** (a global), where an editor connects an account. The key is stored server-side and is unreadable over the REST and GraphQL APIs.
 
@@ -57,7 +58,7 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
 | `enabled` | `true` | `false` keeps the schema but removes the button and the endpoints. |
 | `voices` | none | Collections of people who get a cloned voice; see below. |
 | `readings` | `{ slug: 'vocalstack-readings' }` | The upload collection finished readings are kept in, added by the plugin; `overrides: (collection) => collection` adjusts it. `false` streams readings from VocalStack instead. See below for bringing your own. |
-| `speechVoice` | VocalStack's default | `({ collection, doc, row, req }) => voice`: the voice a transcript's translations are read in, e.g. its speaker's (`clonedVoiceKey(person.vocalstackVoice)`). |
+| `listeners` | off | `true`, or `{ languages?, speak?, access?, perHour? }`: let visitors ask for a transcript in their language; see below. |
 
 ### Audio that isn't an upload
 
@@ -81,7 +82,7 @@ Rows are addressed by their id: `POST /api/episodes/:id/vocalstack/transcribe?fi
 ### Voices
 
 ```ts
-import { clonedVoiceKey, vocalstackPlugin } from '@vocalstack/payload'
+import { vocalstackPlugin } from '@vocalstack/payload'
 
 vocalstackPlugin({
   voices: [
@@ -94,25 +95,37 @@ vocalstackPlugin({
       },
     },
   ],
-  // Read each episode's translations in its speaker's voice, once there is one.
-  speechVoice: async ({ doc, req }) => {
-    const speaker = await req.payload.findByID({ collection: 'speakers', id: doc.speaker as number, req })
-    return clonedVoiceKey(speaker.vocalstackVoice)
-  },
 })
 ```
 
 A sample from a recording can only come from the recordings `recordings` returns for that document: cloning, and hearing a stretch first (`GET /:id/vocalstack/voice/clip`), refuse any other.
 
-Cloning needs at least 30 seconds of the person speaking alone (a minute is better, at most two), and the editor confirms they have the person's permission. From a recording, the editor clicks where the stretch starts and hears it before cloning; the plugin takes it from VocalStack. An uploaded sample is sent through your server, so on hosts that cap request bodies (Vercel: 4.5 MB) keep it to a minute or two of MP3 or M4A. Training takes a few minutes; the panel follows it. Deleting the voice deletes it in VocalStack too.
+Cloning needs at least 30 seconds of the person speaking alone (a minute is better, at most two), and the editor confirms they have the person's permission. From a recording, the editor clicks where the stretch starts and hears it before cloning; the plugin takes it from VocalStack. An uploaded sample is sent through your server, so on hosts that cap request bodies (Vercel: 4.5 MB) keep it to a minute or two of MP3 or M4A. Training takes a few minutes; the panel follows it. Deleting the voice deletes it in VocalStack too. Readings don't name a voice: VocalStack picks it for each recording.
 
 ### Translations and readings
 
-Translating an hour-long transcript takes a few minutes; the admin keeps calling until it is done, and what is translated is saved as it goes. A reading is rendered by VocalStack (a few languages at a time per recording) and saved once ready. The reading keeps each sentence where it was said, unless the one before still runs, so a player can follow along with `speech[lang].sentences` (`timedTokens()` works on them as on the transcript).
+Translating an hour-long transcript takes a few minutes. The server does it in steps of about 20 seconds, each saved as it goes, and carries on after each response whenever the document is read or its progress is asked for, so an editor can close the page (and a translation started by a listener finishes on its own). A recording has at most 10 languages besides its spoken one; asking for an 11th answers 409 `language_limit_reached`. A reading is rendered by VocalStack (a few languages at a time per recording) and saved once ready. The reading keeps each sentence where it was said, unless the one before still runs, so a player can follow along with `speech[lang].sentences` (`timedTokens()` works on them as on the transcript).
 
 **Everything is asked for once and kept.** The transcript (text, sentences, word times) and each translation are saved on the document. Translating again only asks for sentences that have none, and reads ones VocalStack already translated back from `/transcript?lang=` rather than translating them again. A finished reading's MP3 is downloaded once and saved as an upload in the `vocalstack-readings` collection (option `readings`), so listeners are served from your storage: `GET …/vocalstack/audio` redirects to that file, or for the spoken language to your own audio file, and only falls back to VocalStack while a reading isn't kept yet. Point your storage adapter at the readings collection, e.g. `s3Storage({ collections: { 'vocalstack-readings': { prefix: 'readings', disablePayloadAccessControl: true } } })` for direct public URLs.
 
 **The readings collection.** By default the plugin adds `vocalstack-readings`: public read, and create, update and delete for signed-in users. Change it with `readings: { overrides: (collection) => ({ ...collection, access: { ... } }) }`, or define an upload collection with that slug (or `readings.slug`) yourself; the plugin then uses yours as it is. It needs to accept `audio/mpeg` and to have text fields `lang`, `recordingId` and `voice`.
+
+### Languages for listeners
+
+With `listeners: true`, anyone who may read a document can ask for its transcript in another language, from your own site:
+
+```ts
+// What can be asked for: { languages: [{ code, name, native, translation, voice }], translation, voice }
+await fetch('/api/vocalstack/languages')
+// Ask (on an array row add ?field=&row= as for transcribing). Asked already: answers where it stands.
+await fetch(`/api/sermons/${id}/vocalstack/listen`, { method: 'POST', body: JSON.stringify({ lang: 'pl' }) })
+// Follow it: { state: 'translating' | 'ready' | 'failed' | 'none', done, total, voice, speech: { state, audio }, version }
+await fetch(`/api/sermons/${id}/vocalstack/listen?lang=pl`)
+```
+
+The translation is saved on the document, and where VocalStack can read the language aloud, the reading follows (in the voice VocalStack picks) and its MP3 is kept in the readings collection. Once `speech.state` is `ready`, `speech.audio` is that file in your own storage. Nothing is made twice: a language someone already asked for is answered from the document. Visitors can only ask for languages VocalStack offers (narrowed by `languages`), within the 10-language limit, and each one (by IP address) can ask for `perHour` new languages an hour (10 by default); `access: ({ lang, req }) => boolean` adds your own check. The language list keeps working when VocalStack can't be reached: the plugin falls back to its last answer, or to the list it ships with.
+
+**Your site keeps working without VocalStack.** Everything a listener reads or hears (the transcript, every translation, every reading's MP3 and word timings) is served from your database and storage. VocalStack is only needed to make something new.
 
 When VocalStack does not answer (an outage, an upgrade), the endpoints say *VocalStack is unavailable, try again shortly.* instead of waiting.
 
@@ -142,3 +155,7 @@ tab: "Connected", BroadcastChannel('vocalstack') ─▶ admin refreshes; tab clo
 ```
 
 Cancel redirects with `?error=access_denied&state=…`. The key appears in the dashboard's API keys list as `example.com (Payload CMS)`, where it can be revoked.
+
+## Releasing
+
+Bump `version` in `package.json` and push to `main`. The `publish` workflow publishes that version to npm (trusted publishing, with provenance), tags `v<version>` and creates the GitHub release. A version npm already has is skipped. A prerelease (`0.5.0-beta.1`) goes to the `next` dist-tag. Nobody publishes from a laptop.
