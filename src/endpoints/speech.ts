@@ -15,7 +15,7 @@ import type {
   VocalStackPluginOptions,
 } from '../types.js'
 
-import { DEFAULT_API_URL, UNAVAILABLE, VocalStackAPI, VocalStackAPIError, type VoiceTrack } from '../api.js'
+import { DEFAULT_API_URL, type SpeakAs, UNAVAILABLE, VocalStackAPI, VocalStackAPIError, type VoiceTrack } from '../api.js'
 import { allowNewLanguage, forListeners, LANGUAGE_LIMIT, languageList, listenerOptions } from '../languages.js'
 import { readingsSlug } from '../readings.js'
 import { resolveAPIKey } from '../settings.js'
@@ -152,9 +152,9 @@ const readingName = (target: Target, lang: string, voice: null | string) =>
  */
 async function keepReading(req: PayloadRequest, api: VocalStackAPI, slug: CollectionSlug, target: Target, lang: string, speech: Speech): Promise<Speech> {
   if (speech.audio || speech.state !== 'sealed') return speech
-  // The reading's key as VocalStack knows it: its mode (`synthetic` | `cloned`) on newer APIs,
-  // its cast key on older ones. A key the API does not take (400) is followed by the next.
-  const keys = [...new Set([speech.voice ?? undefined, speech.cast ?? undefined, undefined])]
+  // The reading's track by its key (`cast:…`), or the default voice for older (`''`) tracks.
+  // A key the API does not take (400) is followed by the default.
+  const keys = [...new Set([speech.voice || undefined, undefined])]
   let res: Response | undefined
   for (const voice of keys) {
     const src = await api.audioURL(target.data.recordingId!, { kind: 'voice', lang, voice })
@@ -210,8 +210,8 @@ function trackFor(tracks: VoiceTrack[], lang: string, speech: Speech) {
   return mine.find((t) => keyOf(t) && t.state !== 'clips') ?? mine.find((t) => t.voiceKey === '')
 }
 
-/** A track's key: its mode (`synthetic` | `cloned`) where the API names one, else its cast key. */
-const keyOf = (t: VoiceTrack) => (t.voice === 'synthetic' || t.voice === 'cloned' ? t.voice : t.voiceKey)
+/** A track's key, which `/audio?voice=` takes: its cast (`cast:0=M1;1=F1`), or `''` on older tracks. */
+const keyOf = (t: VoiceTrack) => t.voiceKey
 
 /** The key VocalStack gave the reading it just took on for `lang`. */
 const askedKey = (tracks: VoiceTrack[] | undefined, lang: string): null | string => {
@@ -221,11 +221,18 @@ const askedKey = (tracks: VoiceTrack[] | undefined, lang: string): null | string
 }
 
 /** The voices readings of this transcript are made in: the site's say (`voiceMode`), else the transcript's toggle. */
-async function voiceModeOf(req: PayloadRequest, collection: CollectionSlug, options: VocalStackPluginOptions, target: Target): Promise<{ fixed: boolean; mode: VoiceMode }> {
+async function voiceModeOf(
+  req: PayloadRequest,
+  collection: CollectionSlug,
+  options: VocalStackPluginOptions,
+  target: Target,
+): Promise<{ as: SpeakAs; fixed: boolean; mode: VoiceMode }> {
   const decided = await options.voiceMode?.({ collection, doc: target.doc, req, row: target.row })
-  if (decided === 'cloned' || decided === 'synthetic') return { fixed: true, mode: decided }
-  return { fixed: false, mode: target.data.voices === 'cloned' ? 'cloned' : 'synthetic' }
+  if (decided === 'cloned' || decided === 'synthetic') return { as: { cloned: decided === 'cloned' }, fixed: true, mode: decided }
+  const mode = target.data.voices === 'cloned' ? 'cloned' : 'synthetic'
+  return { as: { cloned: mode === 'cloned' }, fixed: false, mode }
 }
+
 
 /** A spoken translation brought up to date from VocalStack's track. */
 function settle(speech: Speech, track: undefined | VoiceTrack, translation: Translation | undefined): Speech {
@@ -235,9 +242,11 @@ function settle(speech: Speech, track: undefined | VoiceTrack, translation: Tran
     return age < 120_000 ? speech : { ...speech, error: 'VocalStack has no reading of this language. Try again.', state: 'failed' }
   }
   if (track.state === 'failed') return { ...speech, error: track.error ?? 'The reading failed.', state: 'failed' }
-  if (track.state !== 'sealed') return { ...speech, done: track.clips?.length ?? 0, error: null, state: track.state === 'queued' ? 'queued' : 'running', voice: keyOf(track) || speech.voice }
+  const readIn = track.voices ?? speech.readIn ?? null
+  if (track.state !== 'sealed') return { ...speech, done: track.clips?.length ?? 0, error: null, readIn, state: track.state === 'queued' ? 'queued' : 'running', voice: keyOf(track) || speech.voice }
   return {
     ...speech,
+    readIn,
     voice: keyOf(track) || speech.voice,
     done: null,
     durationS: track.durationS ?? null,
@@ -334,7 +343,7 @@ async function advance(
   target: Target,
   key: string,
   budgetMs: number,
-  cloned: () => Promise<boolean>,
+  speakAs: () => Promise<SpeakAs>,
 ): Promise<VocalStackFieldData> {
   const deadline = Date.now() + budgetMs
   let data = target.data
@@ -367,12 +376,12 @@ async function advance(
   for (const [lang, s] of Object.entries(data.speech ?? {})) {
     if (s.state !== 'translating' || !isTranslated(data.translations?.[lang]) || Date.now() > deadline + 30_000) continue
     try {
-      const inClones = await cloned()
-      const tracks = await api.speak(data.recordingId!, [lang], { cloned: inClones })
+      const as = await speakAs()
+      const tracks = await api.speak(data.recordingId!, [lang], as)
       const requestedAt = new Date().toISOString()
       const voice = askedKey(tracks, lang)
       data = await target.save((current) => ({
-        speech: { ...current.speech, [lang]: { ...current.speech?.[lang], cast: inClones ? 'cloned' : 'synthetic', error: null, requestedAt, state: 'queued', voice } },
+        speech: { ...current.speech, [lang]: { ...current.speech?.[lang], cast: as.cloned ? 'cloned' : 'synthetic', error: null, requestedAt, state: 'queued', voice } },
       }))
     } catch (err) {
       // Busy (a few readings at a time per recording): it stays waiting and is asked for again later.
@@ -473,7 +482,7 @@ function background(
     if (target instanceof Response) return
     await advance(req, new VocalStackAPI(apiKey, options.apiURL ?? DEFAULT_API_URL), readingsSlug(options), target, key, BACKGROUND_MS, async () => {
       const fresh = await locate(req, collection, options, rowFields, 'admin')
-      return (await voiceModeOf(req, collection, options, fresh instanceof Response ? target : fresh)).mode === 'cloned'
+      return (await voiceModeOf(req, collection, options, fresh instanceof Response ? target : fresh)).as
     })
   }
   const run = () =>
@@ -647,11 +656,11 @@ export function speechEndpoints(collection: CollectionSlug, options: VocalStackP
           const later = asked.langs.filter((l) => !ready.includes(l))
           let data = target.data
           if (ready.length) {
-            const cloned = (await voiceModeOf(req, collection, options, target)).mode === 'cloned'
-            const tracks = await api.speak(target.data.recordingId!, ready, { cloned })
+            const { as } = await voiceModeOf(req, collection, options, target)
+            const tracks = await api.speak(target.data.recordingId!, ready, as)
             for (const lang of ready) await dropReading(req, readings, data.speech?.[lang])
             const requestedAt = new Date().toISOString()
-            const cast = cloned ? 'cloned' : 'synthetic'
+            const cast = as.cloned ? 'cloned' : 'synthetic'
             data = await target.save((current) => ({
               speech: {
                 ...current.speech,
@@ -676,7 +685,8 @@ export function speechEndpoints(collection: CollectionSlug, options: VocalStackP
         if (!req.user) return json({ error: 'Sign in first.' }, 401)
         const target = await locate(req, collection, options, rowFields, 'user')
         if (target instanceof Response) return target
-        const voiceMode = await voiceModeOf(req, collection, options, target)
+        const { fixed, mode } = await voiceModeOf(req, collection, options, target)
+        const voiceMode = { fixed, mode }
         const answer = (vocalstack: VocalStackFieldData) => json({ vocalstack, voiceMode } satisfies SpeechResponse)
         if (!target.data.recordingId || !hasWork(target.data, readings)) return answer(target.data)
         // Translating goes on in the background; readings are looked at now.

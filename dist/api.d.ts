@@ -72,7 +72,7 @@ export type VoiceOption = {
     quality: number;
     ready?: boolean;
 };
-/** A recording's spoken translation in one language and voice (`voiceKey` is `''` for the default voice). */
+/** A recording's spoken translation in one language, in one cast of voices. */
 export type VoiceTrack = {
     /** Seconds each sentence's clip lasts, by sentence id. */
     clipDur?: Record<string, number>;
@@ -82,11 +82,18 @@ export type VoiceTrack = {
     lang: string;
     /** `queued`, `running`, `failed`, `sealed` (the track is ready), or `clips` (sentences only). */
     state: string;
-    /** `synthetic` or `cloned` (the API's voice modes); older APIs answer a voice name here, or nothing. */
+    /** The voice it was asked in by name, if it was. */
     voice?: null | string;
+    /** The track's key: `''` for the default voice on older tracks, else its cast (`cast:0=M1;1=F1`). */
     voiceKey: string;
+    /** What it is read in: `cloned`, `synthetic`, or `mixed` (some speakers had no usable clone). Null on older tracks. */
+    voices?: 'cloned' | 'mixed' | 'synthetic' | null;
     /** Each sentence's words as [start, end] within its clip, by sentence id. */
     wordTimes?: Record<string, [number, number][]>;
+};
+/** How a reading is voiced: in the speakers' cloned voices where VocalStack has them, or in stock voices. */
+export type SpeakAs = {
+    cloned: boolean;
 };
 export type Language = {
     code: string;
@@ -107,6 +114,7 @@ export declare class VocalStackAPIError extends Error {
     constructor(status: number, code: string, message: string);
 }
 export declare class VocalStackAPI {
+    #private;
     readonly sdk: VocalStack;
     constructor(apiKey: string, baseURL?: string);
     me(): Promise<Record<string, unknown>>;
@@ -136,13 +144,13 @@ export declare class VocalStackAPI {
         translations: Record<string, string>;
     }>;
     /**
-     * Render spoken translations, one job per language, in the recording's default cast: VocalStack
-     * picks each speaker's voice. `cloned` lets it use speakers' own cloned voices (each made with
-     * that speaker's permission); otherwise it reads in stock voices.
+     * Read translations aloud, one job per language. `cloned` reads each speaker in their own cloned
+     * voice where VocalStack can use one (a clone of that speaker, made with their permission, or a
+     * saved voice VocalStack recognised as them) and in a stock voice otherwise; `synthetic` reads
+     * everyone in stock voices. Each track says which it got (`voices`: cloned, synthetic or mixed).
+     * A clone only ever reads words its own speaker said.
      */
-    speak(recordingId: string, langs: string[], opts?: {
-        cloned?: boolean;
-    }): Promise<VoiceTrack[]>;
+    speak(recordingId: string, langs: string[], as?: SpeakAs): Promise<VoiceTrack[]>;
     voiceTracks(recordingId: string, lang?: string): Promise<VoiceTrack[]>;
     /** An address of the recording's audio, or of a spoken translation's, that works for an hour or so. */
     audioURL(recordingId: string, opts: {
@@ -161,7 +169,8 @@ export declare class VocalStackAPI {
     }, idempotencyKey: string): Promise<Voice>;
     /**
      * Clone a speaker's voice from stretches of a transcribed recording (5–60 s in all). `draft`
-     * makes a trial voice to hear first; keep it with `keepVoice`, or delete it.
+     * makes a trial voice to hear first; keep it with `keepVoice`, or delete it. A library voice:
+     * VocalStack looks for library voices first when it works out who speaks in a new recording.
      */
     voiceFromSpeaker(opts: {
         draft: boolean;
@@ -173,7 +182,7 @@ export declare class VocalStackAPI {
         }[];
         speaker: number;
     }, idempotencyKey: string): Promise<Voice>;
-    /** Keep a trial voice, as `name`, with the speaker's permission. */
+    /** Keep a trial voice, as `name`, with the speaker's permission, in the library. */
     keepVoice(id: string, name: string): Promise<Voice>;
     deleteVoice(id: string): Promise<unknown>;
     availableVoices(lang: string, recordingId?: string): Promise<{

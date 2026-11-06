@@ -57,7 +57,7 @@ export type Voice = {
 
 export type VoiceOption = { cloned: boolean; default: boolean; gender?: null | string; id: string; name: string; quality: number; ready?: boolean }
 
-/** A recording's spoken translation in one language and voice (`voiceKey` is `''` for the default voice). */
+/** A recording's spoken translation in one language, in one cast of voices. */
 export type VoiceTrack = {
   /** Seconds each sentence's clip lasts, by sentence id. */
   clipDur?: Record<string, number>
@@ -67,12 +67,18 @@ export type VoiceTrack = {
   lang: string
   /** `queued`, `running`, `failed`, `sealed` (the track is ready), or `clips` (sentences only). */
   state: string
-  /** `synthetic` or `cloned` (the API's voice modes); older APIs answer a voice name here, or nothing. */
+  /** The voice it was asked in by name, if it was. */
   voice?: null | string
+  /** The track's key: `''` for the default voice on older tracks, else its cast (`cast:0=M1;1=F1`). */
   voiceKey: string
+  /** What it is read in: `cloned`, `synthetic`, or `mixed` (some speakers had no usable clone). Null on older tracks. */
+  voices?: 'cloned' | 'mixed' | 'synthetic' | null
   /** Each sentence's words as [start, end] within its clip, by sentence id. */
   wordTimes?: Record<string, [number, number][]>
 }
+
+/** How a reading is voiced: in the speakers' cloned voices where VocalStack has them, or in stock voices. */
+export type SpeakAs = { cloned: boolean }
 
 export type Language = { code: string; name: string; native: string; translation: boolean; voice: boolean }
 
@@ -125,8 +131,12 @@ const call = async <T>(run: () => Promise<T>): Promise<T> => {
 
 export class VocalStackAPI {
   readonly sdk: VocalStack
+  readonly #apiKey: string
+  readonly #baseURL: string
 
   constructor(apiKey: string, baseURL = DEFAULT_API_URL) {
+    this.#apiKey = apiKey
+    this.#baseURL = baseURL.replace(/\/+$/, '')
     this.sdk = new VocalStack({
       apiKey,
       baseUrl: baseURL,
@@ -200,19 +210,27 @@ export class VocalStackAPI {
   }
 
   /**
-   * Render spoken translations, one job per language, in the recording's default cast: VocalStack
-   * picks each speaker's voice. `cloned` lets it use speakers' own cloned voices (each made with
-   * that speaker's permission); otherwise it reads in stock voices.
+   * Read translations aloud, one job per language. `cloned` reads each speaker in their own cloned
+   * voice where VocalStack can use one (a clone of that speaker, made with their permission, or a
+   * saved voice VocalStack recognised as them) and in a stock voice otherwise; `synthetic` reads
+   * everyone in stock voices. Each track says which it got (`voices`: cloned, synthetic or mixed).
+   * A clone only ever reads words its own speaker said.
    */
-  async speak(recordingId: string, langs: string[], opts: { cloned?: boolean } = {}) {
-    const render = (body: object) => call(() => this.sdk.recordings.renderVoice(recordingId, body as never) as unknown as Promise<VoiceTrack[]>)
-    try {
-      return await render({ langs, voice: opts.cloned ? 'cloned' : 'synthetic' })
-    } catch (err) {
-      // An API from before `voice: 'synthetic' | 'cloned'` takes it for a voice id: there, consent turns clones on.
-      if (!(err instanceof VocalStackAPIError && err.status === 400 && /no voice '(cloned|synthetic)'/.test(err.message))) throw err
-      return render({ consent: opts.cloned ? true : undefined, langs })
-    }
+  async speak(recordingId: string, langs: string[], as: SpeakAs = { cloned: false }): Promise<VoiceTrack[]> {
+    const ask = { langs, voices: as.cloned ? 'cloned' : 'synthetic' }
+    // Straight to the API: the SDK on npm (2.0.0-alpha.1) leaves `voices` out of the body.
+    const res = await call(() =>
+      fetch(`${this.#baseURL}/v1/recordings/${encodeURIComponent(recordingId)}/voice`, {
+        body: JSON.stringify(ask),
+        headers: { authorization: `Bearer ${this.#apiKey}`, 'content-type': 'application/json' },
+        method: 'POST',
+        signal: AbortSignal.timeout(30_000),
+      }),
+    )
+    const body = (await res.json().catch(() => null)) as null | { code?: string; data?: { details?: unknown }; message?: string }
+    if (res.ok) return body as unknown as VoiceTrack[]
+    if (res.status === 502 || res.status === 503 || res.status === 504) throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
+    throw new VocalStackAPIError(res.status, body?.code ?? 'http_error', body?.message ?? `VocalStack answered ${res.status}`)
   }
 
   voiceTracks(recordingId: string, lang?: string) {
@@ -244,16 +262,18 @@ export class VocalStackAPI {
 
   /**
    * Clone a speaker's voice from stretches of a transcribed recording (5–60 s in all). `draft`
-   * makes a trial voice to hear first; keep it with `keepVoice`, or delete it.
+   * makes a trial voice to hear first; keep it with `keepVoice`, or delete it. A library voice:
+   * VocalStack looks for library voices first when it works out who speaks in a new recording.
    */
   voiceFromSpeaker(opts: { draft: boolean; name: string; recordingId: string; spans: { end: number; start: number }[]; speaker: number }, idempotencyKey: string) {
-    return call(() => this.sdk.voices.createFromSpeaker({ ...opts, consent: true, library: false } as never, { idempotencyKey }) as unknown as Promise<Voice>)
+    return call(() => this.sdk.voices.createFromSpeaker({ ...opts, consent: true, library: true } as never, { idempotencyKey }) as unknown as Promise<Voice>)
   }
 
-  /** Keep a trial voice, as `name`, with the speaker's permission. */
+  /** Keep a trial voice, as `name`, with the speaker's permission, in the library. */
   keepVoice(id: string, name: string) {
-    return call(() => this.sdk.voices.update(id, { consent: true, draft: false, name } as never) as unknown as Promise<Voice>)
+    return call(() => this.sdk.voices.update(id, { consent: true, draft: false, library: true, name } as never) as unknown as Promise<Voice>)
   }
+
 
   deleteVoice(id: string) {
     return call(() => this.sdk.voices.delete(id) as Promise<unknown>)

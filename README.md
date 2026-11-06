@@ -37,7 +37,7 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
   - `POST /api/{collection}/:id/vocalstack/transcribe`, `POST …/vocalstack/stop`, `GET …/vocalstack/status` and `GET …/vocalstack/stream` (live progress as Server-Sent Events).
 - **Translations and readings**, under every finished transcript: translate it into up to 10 of VocalStack's 100 languages (VocalStack's limit per recording), and have each translation read aloud where VocalStack has a voice for it. VocalStack picks the voices; a toggle on each transcript chooses between **synthetic** voices and the speakers' own **cloned** voices (where they have one, made with their permission), saved as `voices`. One click in the admin does both; the server carries on until it is done, with no one watching. Saved in the `vocalstack` group as:
   - `translations`: `{ [lang]: { translatedAt, sentences, pending?, error?, requestedAt? } }`, the transcript's sentences (same ids and times) translated. `pending` while the server is still translating it.
-  - `speech`: `{ [lang]: { voice, state, error, durationS, requestedAt, renderedAt, sentences, audio } }`. `state` is `translating` (waiting for its translation), `queued`, `running`, `failed` or `sealed`; once sealed, `sentences` are the translation in the reading's own timing, with words, for a read-along player, and `audio` is the MP3 kept in your storage.
+  - `speech`: `{ [lang]: { voice, cast, readIn, state, error, durationS, requestedAt, renderedAt, sentences, audio } }`. `state` is `translating` (waiting for its translation), `queued`, `running`, `failed` or `sealed`; once sealed, `sentences` are the translation in the reading's own timing, with words, for a read-along player, and `audio` is the MP3 kept in your storage.
   - `POST …/vocalstack/voices { voices: 'synthetic' | 'cloned' }`, `POST …/vocalstack/request { langs, speak? }` (translate, and read aloud unless `speak: false`; carried on by the server), `POST …/vocalstack/translate { langs }` (one step; answers `more: true` when it stopped for time), `DELETE …/vocalstack/translate?lang=`, `POST …/vocalstack/speak { langs }`, `GET …/vocalstack/speak`, and the public `GET …/vocalstack/audio?lang=`, which redirects to the reading's MP3 (or, with no `lang` or the spoken one, the recording's audio) for anyone who may read the document.
 - **Languages for listeners** (opt in with `listeners`): visitors pick any language VocalStack offers, and it is made for them and kept for everyone after. `GET /api/vocalstack/languages` is public, `POST …/vocalstack/listen { lang }` asks for a language and `GET …/vocalstack/listen?lang=` says where it stands; see below.
 - **Voices** (opt in with `voices`): documents of a collection of people get a sidebar panel to clone that person's voice from a minute of a recording they speak in, or from an uploaded sample, with their permission. Kept in a hidden `vocalstackVoice` group (`voiceId`, `state`: `none`/`training`/`ready`/`failed`, `progress`, `error`, `sampleS`, `consentAt`, `createdAt`), with `GET`/`POST`/`DELETE /api/{collection}/:id/vocalstack/voice`, `…/voice/sources` and `…/voice/preview`.
@@ -59,6 +59,7 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
 | `voices` | none | Collections of people who get a cloned voice; see below. |
 | `readings` | `{ slug: 'vocalstack-readings' }` | The upload collection finished readings are kept in, added by the plugin; `overrides: (collection) => collection` adjusts it. `false` streams readings from VocalStack instead. See below for bringing your own. |
 | `listeners` | off | `true`, or `{ languages?, speak?, access?, perHour? }`: let visitors ask for a transcript in their language; see below. |
+| `voiceMode` | the transcript's toggle | `({ collection, doc, req, row }) => 'synthetic' \| 'cloned' \| undefined`: the site decides how transcripts are read aloud, and the toggle is hidden. See below. |
 
 ### Audio that isn't an upload
 
@@ -100,7 +101,16 @@ vocalstackPlugin({
 
 A sample from a recording can only come from the recordings `recordings` returns for that document: cloning, and hearing a stretch first (`GET /:id/vocalstack/voice/clip`), refuse any other.
 
-Cloning needs at least 30 seconds of the person speaking alone (a minute is better, at most two), and the editor confirms they have the person's permission. From a recording, the editor clicks where the stretch starts and hears it before cloning; the plugin takes it from VocalStack. An uploaded sample is sent through your server, so on hosts that cap request bodies (Vercel: 4.5 MB) keep it to a minute or two of MP3 or M4A. Training takes a few minutes; the panel follows it. Deleting the voice deletes it in VocalStack too. Readings don't name a voice: VocalStack picks it for each recording.
+Cloning needs at least 30 seconds of the person speaking alone (a minute is better, at most two), and the editor confirms they have the person's permission. From a recording, the editor clicks where the stretch starts and hears it before cloning; the plugin takes it from VocalStack. An uploaded sample is sent through your server, so on hosts that cap request bodies (Vercel: 4.5 MB) keep it to a minute or two of MP3 or M4A. Training takes a few minutes; the panel follows it. Deleting the voice deletes it in VocalStack too. Voices are kept as library voices: when VocalStack transcribes a new recording, it checks the speakers against them first.
+
+A cloned voice only ever reads words its own speaker said. With `cloned` (from the toggle, or from `voiceMode` once a person has a voice), each speaker VocalStack has matched to a clone is read in it: the speaker it was made from, or one VocalStack recognised as the same person when it transcribed the recording. Everyone else is read in a stock voice. VocalStack doesn't always recognise a speaker, and recordings transcribed before the voice existed are not matched, so a reading reports what it got as `speech[lang].readIn`: `cloned`, `synthetic`, or `mixed`.
+
+```ts
+voiceMode: async ({ doc, req }) => {
+  const speaker = await req.payload.findByID({ collection: 'speakers', id: doc.speaker, depth: 0, req })
+  return speaker.vocalstackVoice?.state === 'ready' ? 'cloned' : 'synthetic'
+}
+```
 
 ### Translations and readings
 

@@ -248,12 +248,20 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
                   total={t?.sentences.length ?? 0}
                 />
               ) : s?.state === 'sealed' ? (
-                <audio
-                  controls
-                  key={s.renderedAt ?? ''}
-                  preload="none"
-                  src={`${serverURL}${api}${base}/audio${withQuery({ lang, v: s.renderedAt ?? '' })}`}
-                />
+                <>
+                  <audio
+                    controls
+                    key={s.renderedAt ?? ''}
+                    preload="none"
+                    src={`${serverURL}${api}${base}/audio${withQuery({ lang, v: s.renderedAt ?? '' })}`}
+                  />
+                  {s.cast === 'cloned' && s.readIn === 'mixed' && (
+                    <span className="vs-speech-muted">Some speakers are read in stock voices: they have no cloned voice to use.</span>
+                  )}
+                  {s.cast === 'cloned' && s.readIn === 'synthetic' && (
+                    <span className="vs-speech-muted">Read in stock voices: no speaker has a cloned voice to use.</span>
+                  )}
+                </>
               ) : t?.error && !t.sentences.length ? (
                 <p className="vs-speech-error">Translating failed: {t.error}</p>
               ) : s?.state === 'translating' ? (

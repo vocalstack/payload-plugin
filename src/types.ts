@@ -71,8 +71,9 @@ export type VocalStackPluginOptions = {
   listeners?: boolean | ListenerOptions
   /**
    * Whether a transcript is read in its speakers' cloned voices or in synthetic ones, decided by
-   * the site (e.g. from the person speaking: `cloned` when they agreed to voice cloning). Answer
-   * nothing to leave it to the transcript's own toggle. When set, the toggle is not shown.
+   * the site (e.g. from the person speaking: `cloned` once they have a voice). `cloned` reads each
+   * speaker in their clone where VocalStack has one for them, and in a stock voice otherwise.
+   * Answer nothing to leave it to the transcript's own toggle. When set, the toggle is not shown.
    */
   voiceMode?: (args: {
     collection: CollectionSlug
@@ -146,6 +147,8 @@ export type Speech = {
   state: SpeechState
   /** Read in speakers' cloned voices, or in stock (synthetic) ones. */
   cast?: null | VoiceMode
+  /** What VocalStack read it in: `cloned`, `synthetic`, or `mixed` (some speakers had no usable clone). */
+  readIn?: 'cloned' | 'mixed' | 'synthetic' | null
   /** VocalStack's key for the voices it is read in (e.g. `cast:-1=M1`); `null` until VocalStack says. */
   voice: null | string
   /** Once sealed: the reading's MP3, saved once in the readings upload collection and served from there. */

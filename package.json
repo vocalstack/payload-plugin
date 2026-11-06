@@ -1,6 +1,6 @@
 {
   "name": "@vocalstack/payload",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "VocalStack for Payload CMS: transcribe audio, translate it into other languages and read it aloud, kept in your own database and storage.",
   "license": "MIT",
   "type": "module",

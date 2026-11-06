@@ -52,7 +52,11 @@ const call = async (run) => {
 };
 export class VocalStackAPI {
     sdk;
+    #apiKey;
+    #baseURL;
     constructor(apiKey, baseURL = DEFAULT_API_URL) {
+        this.#apiKey = apiKey;
+        this.#baseURL = baseURL.replace(/\/+$/, '');
         this.sdk = new VocalStack({
             apiKey,
             baseUrl: baseURL,
@@ -102,21 +106,27 @@ export class VocalStackAPI {
         return call(() => this.sdk.recordings.translation(recordingId, lang, sentenceIds));
     }
     /**
-     * Render spoken translations, one job per language, in the recording's default cast: VocalStack
-     * picks each speaker's voice. `cloned` lets it use speakers' own cloned voices (each made with
-     * that speaker's permission); otherwise it reads in stock voices.
+     * Read translations aloud, one job per language. `cloned` reads each speaker in their own cloned
+     * voice where VocalStack can use one (a clone of that speaker, made with their permission, or a
+     * saved voice VocalStack recognised as them) and in a stock voice otherwise; `synthetic` reads
+     * everyone in stock voices. Each track says which it got (`voices`: cloned, synthetic or mixed).
+     * A clone only ever reads words its own speaker said.
      */
-    async speak(recordingId, langs, opts = {}) {
-        const render = (body) => call(() => this.sdk.recordings.renderVoice(recordingId, body));
-        try {
-            return await render({ langs, voice: opts.cloned ? 'cloned' : 'synthetic' });
-        }
-        catch (err) {
-            // An API from before `voice: 'synthetic' | 'cloned'` takes it for a voice id: there, consent turns clones on.
-            if (!(err instanceof VocalStackAPIError && err.status === 400 && /no voice '(cloned|synthetic)'/.test(err.message)))
-                throw err;
-            return render({ consent: opts.cloned ? true : undefined, langs });
-        }
+    async speak(recordingId, langs, as = { cloned: false }) {
+        const ask = { langs, voices: as.cloned ? 'cloned' : 'synthetic' };
+        // Straight to the API: the SDK on npm (2.0.0-alpha.1) leaves `voices` out of the body.
+        const res = await call(() => fetch(`${this.#baseURL}/v1/recordings/${encodeURIComponent(recordingId)}/voice`, {
+            body: JSON.stringify(ask),
+            headers: { authorization: `Bearer ${this.#apiKey}`, 'content-type': 'application/json' },
+            method: 'POST',
+            signal: AbortSignal.timeout(30_000),
+        }));
+        const body = (await res.json().catch(() => null));
+        if (res.ok)
+            return body;
+        if (res.status === 502 || res.status === 503 || res.status === 504)
+            throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE);
+        throw new VocalStackAPIError(res.status, body?.code ?? 'http_error', body?.message ?? `VocalStack answered ${res.status}`);
     }
     voiceTracks(recordingId, lang) {
         return call(() => this.sdk.recordings.voice(recordingId, lang));
@@ -143,14 +153,15 @@ export class VocalStackAPI {
     }
     /**
      * Clone a speaker's voice from stretches of a transcribed recording (5–60 s in all). `draft`
-     * makes a trial voice to hear first; keep it with `keepVoice`, or delete it.
+     * makes a trial voice to hear first; keep it with `keepVoice`, or delete it. A library voice:
+     * VocalStack looks for library voices first when it works out who speaks in a new recording.
      */
     voiceFromSpeaker(opts, idempotencyKey) {
-        return call(() => this.sdk.voices.createFromSpeaker({ ...opts, consent: true, library: false }, { idempotencyKey }));
+        return call(() => this.sdk.voices.createFromSpeaker({ ...opts, consent: true, library: true }, { idempotencyKey }));
     }
-    /** Keep a trial voice, as `name`, with the speaker's permission. */
+    /** Keep a trial voice, as `name`, with the speaker's permission, in the library. */
     keepVoice(id, name) {
-        return call(() => this.sdk.voices.update(id, { consent: true, draft: false, name }));
+        return call(() => this.sdk.voices.update(id, { consent: true, draft: false, library: true, name }));
     }
     deleteVoice(id) {
         return call(() => this.sdk.voices.delete(id));
