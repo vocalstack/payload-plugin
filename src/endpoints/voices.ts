@@ -1,11 +1,11 @@
-import type { Endpoint, PayloadRequest } from 'payload'
+import type { CollectionSlug, Endpoint, Payload, PayloadRequest } from 'payload'
 
 import { addDataAndFileToRequest } from 'payload'
 import { randomUUID } from 'node:crypto'
 
-import type { VoiceCollectionConfig, VoiceFieldData, VoiceSource, VoiceState, VocalStackPluginOptions } from '../types.js'
+import type { CloneState, SpeakerCollectionConfig, SpeakerFieldData, SpeakerSource, VocalStackPluginOptions, VoiceFieldData } from '../types.js'
 
-import { type Voice, DEFAULT_API_URL, VocalStackAPI, VocalStackAPIError } from '../api.js'
+import { type SavedSpeaker, DEFAULT_API_URL, VocalStackAPI, VocalStackAPIError } from '../api.js'
 import { forListeners, languageList, listenerOptions } from '../languages.js'
 import { resolveAPIKey } from '../settings.js'
 import { apiError, canUpdate } from './transcribe.js'
@@ -16,56 +16,88 @@ const json = (body: unknown, status = 200, headers?: Record<string, string>) => 
 const MIN_SAMPLE_S = 30
 const MAX_SAMPLE_S = 120
 
-const STATES = new Set<VoiceState>(['failed', 'ready', 'training'])
+const STATES = new Set<CloneState>(['failed', 'ready', 'training'])
 
-/** VocalStack's voice as the document keeps it. */
-const fieldData = (v: Voice): VoiceFieldData => ({
+/** VocalStack's saved speaker as the document keeps it. */
+const fieldData = (v: SavedSpeaker): SpeakerFieldData => ({
+  cloneId: v.cloneId,
   createdAt: v.createdAt,
   error: v.error ?? null,
   progress: v.progress,
   sampleS: v.sampleS,
-  state: STATES.has(v.state as VoiceState) ? (v.state as VoiceState) : 'training',
-  voiceId: v.id,
+  speakerId: v.id,
+  state: !v.cloneId ? 'none' : STATES.has(v.state as CloneState) ? (v.state as CloneState) : 'training',
 })
 
-/** A trial voice, as the panel follows it. */
-const trialOf = (v: Voice) => ({ error: v.error ?? null, id: v.id, progress: v.progress, state: v.state })
+/** A trial, as the panel follows it. */
+const trialOf = (v: SavedSpeaker) => ({ error: v.error ?? null, id: v.id, progress: v.progress, state: v.state })
 
-/** Delete a trial voice; a kept one is never deleted this way. */
+/** Delete a trial; a kept speaker is never deleted this way. */
 async function dropTrial(api: VocalStackAPI, id: string) {
   if (!id) return
-  const voice = await api.voice(id).catch(() => null)
-  if (voice?.draft) await api.deleteVoice(id).catch(() => undefined)
+  const speaker = await api.savedSpeaker(id).catch(() => null)
+  if (speaker?.draft) await api.deleteSpeaker(id).catch(() => undefined)
 }
 
 // Picked from a recording, as in the VocalStack dashboard: at least 5 s makes a voice, at most 60 s.
 export const PICK_MIN_S = 5
 export const PICK_MAX_S = 60
 
-const EMPTY: VoiceFieldData = { consentAt: null, createdAt: null, error: null, progress: null, sampleS: null, state: 'none', voiceId: null }
+const EMPTY: SpeakerFieldData = { cloneId: null, consentAt: null, createdAt: null, error: null, progress: null, sampleS: null, speakerId: null, state: 'none' }
+
+/** The document's saved speaker: the `vocalstackSpeaker` group, else the `vocalstackVoice` group of 0.5 and earlier. */
+export function speakerData(doc: Record<string, unknown>): SpeakerFieldData {
+  const now = doc.vocalstackSpeaker as null | SpeakerFieldData | undefined
+  if (now?.speakerId) return now
+  const old = doc.vocalstackVoice as null | undefined | VoiceFieldData
+  if (old?.voiceId) {
+    const { voiceId, ...rest } = old
+    return { ...EMPTY, ...rest, cloneId: voiceId, speakerId: voiceId }
+  }
+  return { ...EMPTY, ...now }
+}
+
+/** Copy every document's `vocalstackVoice` group (0.5) into `vocalstackSpeaker`, e.g. from a Payload migration. Answers how many moved. */
+export async function migrateSpeakerFields({ collection, payload, req }: { collection: CollectionSlug; payload: Payload; req?: PayloadRequest }): Promise<number> {
+  let moved = 0
+  for (let page = 1; ; page++) {
+    const res = await payload.find({ collection, depth: 0, limit: 100, overrideAccess: true, page, req, where: { 'vocalstackVoice.voiceId': { exists: true } } })
+    for (const doc of res.docs as Record<string, unknown>[]) {
+      if ((doc.vocalstackSpeaker as null | SpeakerFieldData | undefined)?.speakerId) continue
+      const data = speakerData(doc)
+      if (!data.speakerId) continue
+      await payload.update({ id: doc.id as number | string, collection, data: { vocalstackSpeaker: data } as never, depth: 0, overrideAccess: true, req })
+      moved++
+    }
+    if (!res.hasNextPage) return moved
+  }
+}
+
+export const legacyVoiceData = ({ cloneId, speakerId, ...rest }: SpeakerFieldData): VoiceFieldData => ({ ...rest, voiceId: cloneId ?? speakerId ?? null })
 
 /**
- * A person's cloned voice, kept in the `vocalstackVoice` group of their document:
- *   GET    /:id/vocalstack/voice            where its training stands
- *   POST   /:id/vocalstack/voice            clone it: JSON { recordingId, startS, endS, consent },
- *                                           or multipart with a `file` sample and `_payload` { consent }
- *   DELETE /:id/vocalstack/voice            delete it, in VocalStack too
- *   GET    /:id/vocalstack/voice/sources    recordings to take the sample from
- *   GET    /:id/vocalstack/voice/clip       a stretch of one of them, to hear before cloning (?recording=&startS=&endS=)
- *   GET    /:id/vocalstack/voice/preview    the voice speaking (?lang=&format=ogg|caf)
- *   POST   /:id/vocalstack/voice/trial      a trial voice from picked sentences { recordingId, speaker, spans, replace? }
- *   GET    /:id/vocalstack/voice/trial      ?voice= where it stands; …/trial/preview?voice=&lang=&format= hear it
- *   POST   /:id/vocalstack/voice/trial/keep { voice, name, consent } keep it as their voice; DELETE …/trial?voice= drop it
+ * A person saved as a VocalStack speaker, with their cloned voice, kept in the `vocalstackSpeaker` group of their document:
+ *   GET    /:id/vocalstack/speaker            where its voice's training stands
+ *   POST   /:id/vocalstack/speaker            save and clone them: JSON { recordingId, startS, endS, consent },
+ *                                             or multipart with a `file` sample and `_payload` { consent }
+ *   DELETE /:id/vocalstack/speaker            delete it, and its voice, in VocalStack too
+ *   GET    /:id/vocalstack/speaker/sources    recordings to take the sample from
+ *   GET    /:id/vocalstack/speaker/clip       a stretch of one of them, to hear before cloning (?recording=&startS=&endS=)
+ *   GET    /:id/vocalstack/speaker/preview    the voice speaking (?lang=&format=ogg|caf)
+ *   POST   /:id/vocalstack/speaker/trial      a trial from picked sentences { recordingId, speaker, spans, replace? }
+ *   GET    /:id/vocalstack/speaker/trial      ?voice= where it stands; …/trial/preview?voice=&lang=&format= hear it
+ *   POST   /:id/vocalstack/speaker/trial/keep { voice, name, consent } keep it as their speaker; DELETE …/trial?voice= drop it
+ * Each also answers under /:id/vocalstack/voice…, its path in 0.5.
  * A sample is only ever taken from the recordings `config.recordings` offers for that document.
  */
-export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStackPluginOptions): Endpoint[] {
+export function speakerEndpoints(config: SpeakerCollectionConfig, options: VocalStackPluginOptions): Endpoint[] {
   const { collection } = config
   const apiURL = options.apiURL ?? DEFAULT_API_URL
 
   const open = async (req: PayloadRequest, verb: string): Promise<Response | { api: VocalStackAPI; doc: Record<string, unknown>; id: string }> => {
     const id = req.routeParams?.id as string
-    if (!(await canUpdate(req, collection, id))) return json({ error: `You may not ${verb} this voice.` }, 403)
-    if (options.access && !(await options.access({ req }))) return json({ error: `You may not ${verb} this voice.` }, 403)
+    if (!(await canUpdate(req, collection, id))) return json({ error: `You may not ${verb} this speaker.` }, 403)
+    if (options.access && !(await options.access({ req }))) return json({ error: `You may not ${verb} this speaker.` }, 403)
     const apiKey = await resolveAPIKey(req, options)
     if (!apiKey) return json({ code: 'not_connected', error: 'Connect VocalStack first.' }, 409)
     const doc = (await req.payload.findByID({ id, collection, depth: 0, overrideAccess: true, req }).catch(() => null)) as null | Record<string, unknown>
@@ -73,14 +105,16 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     return { api: new VocalStackAPI(apiKey, apiURL), doc, id }
   }
 
-  /** Whether the recording is one the host offers for this person (`config.recordings`). */
-  const ownRecording = async (req: PayloadRequest, doc: Record<string, unknown>, recordingId: string) =>
-    ((await config.recordings?.({ doc, req })) ?? []).some((s) => s.recordingId === recordingId)
+  /** The recording, when the host offers it for this person (`config.recordings`). */
+  const ownRecording = async (req: PayloadRequest, doc: Record<string, unknown>, recordingId: string): Promise<SpeakerSource | undefined> =>
+    ((await config.recordings?.({ doc, req })) ?? []).find((s) => s.recordingId === recordingId)
 
-  const save = async (req: PayloadRequest, id: string, data: VoiceFieldData) => {
-    await req.payload.update({ id, collection, data: { vocalstackVoice: data } as never, depth: 0, overrideAccess: true, req })
+  const save = async (req: PayloadRequest, id: string, data: SpeakerFieldData) => {
+    await req.payload.update({ id, collection, data: { vocalstackSpeaker: data, vocalstackVoice: legacyVoiceData(data) } as never, depth: 0, overrideAccess: true, req })
     return data
   }
+
+  const answer = (name: string, data: SpeakerFieldData, status = 200) => json({ name, vocalstackSpeaker: data, vocalstackVoice: legacyVoiceData(data) }, status)
 
   const nameOf = (req: PayloadRequest, doc: Record<string, unknown>) => {
     const title = req.payload.collections[collection]?.config.admin?.useAsTitle
@@ -89,30 +123,31 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     return name.trim().slice(0, 60) || `${collection} ${doc.id}`
   }
 
-  return [
+  const endpoints: Endpoint[] = [
     {
       method: 'get',
-      path: '/:id/vocalstack/voice',
+      path: '/:id/vocalstack/speaker',
       handler: async (req) => {
         const found = await open(req, 'see')
         if (found instanceof Response) return found
         const { api, doc, id } = found
-        const current = (doc.vocalstackVoice ?? {}) as VoiceFieldData
-        if (!current.voiceId || current.state === 'ready') return json({ name: nameOf(req, doc), vocalstackVoice: current })
+        const stored = speakerData(doc)
+        const migrated = !(doc.vocalstackSpeaker as null | SpeakerFieldData | undefined)?.speakerId && !!stored.speakerId
+        const current = migrated ? await save(req, id, stored) : stored
+        if (!current.speakerId || current.state === 'ready') return answer(nameOf(req, doc), current)
         try {
-          const next = { ...current, ...fieldData(await api.voice(current.voiceId)) }
-          const changed = next.state !== current.state || next.progress !== current.progress || next.error !== current.error
-          return json({ name: nameOf(req, doc), vocalstackVoice: changed ? await save(req, id, next) : current })
+          const next = { ...current, ...fieldData(await api.savedSpeaker(current.speakerId)) }
+          const changed = next.state !== current.state || next.progress !== current.progress || next.error !== current.error || next.cloneId !== current.cloneId
+          return answer(nameOf(req, doc), changed ? await save(req, id, next) : current)
         } catch (err) {
-          // Deleted in the VocalStack dashboard: there is no voice any more.
-          if (err instanceof VocalStackAPIError && err.status === 404) return json({ name: nameOf(req, doc), vocalstackVoice: await save(req, id, EMPTY) })
+          if (err instanceof VocalStackAPIError && err.status === 404) return answer(nameOf(req, doc), await save(req, id, EMPTY))
           return apiError(err)
         }
       },
     },
     {
       method: 'post',
-      path: '/:id/vocalstack/voice',
+      path: '/:id/vocalstack/speaker',
       handler: async (req) => {
         const found = await open(req, 'create')
         if (found instanceof Response) return found
@@ -141,12 +176,12 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
           }
           if (!consent) return json({ error: 'Confirm you have their permission to clone their voice.' }, 400)
 
-          const previous = (doc.vocalstackVoice as null | VoiceFieldData | undefined)?.voiceId
-          const voice = await api.createVoice(sample.blob, sample.name, { consent: true, name: nameOf(req, doc) }, `payload:${collection}:${id}:voice:${randomUUID()}`)
-          const data = await save(req, id, { ...fieldData(voice), consentAt: new Date().toISOString() })
-          // One voice per person: the old one goes once the new one exists.
-          if (previous && previous !== voice.id) await api.deleteVoice(previous).catch(() => undefined)
-          return json({ name: nameOf(req, doc), vocalstackVoice: data }, 201)
+          const previous = speakerData(doc).speakerId
+          const speaker = await api.createSpeaker(sample.blob, sample.name, { consent: true, name: nameOf(req, doc) }, `payload:${collection}:${id}:voice:${randomUUID()}`)
+          const data = await save(req, id, { ...fieldData(speaker), consentAt: new Date().toISOString() })
+          // One saved speaker per person: the old one goes once the new one exists.
+          if (previous && previous !== speaker.id) await api.deleteSpeaker(previous).catch(() => undefined)
+          return answer(nameOf(req, doc), data, 201)
         } catch (err) {
           return apiError(err)
         }
@@ -154,29 +189,29 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     },
     {
       method: 'delete',
-      path: '/:id/vocalstack/voice',
+      path: '/:id/vocalstack/speaker',
       handler: async (req) => {
         const found = await open(req, 'delete')
         if (found instanceof Response) return found
         const { api, doc, id } = found
-        const voiceId = (doc.vocalstackVoice as null | VoiceFieldData | undefined)?.voiceId
+        const { speakerId } = speakerData(doc)
         try {
-          if (voiceId) await api.deleteVoice(voiceId)
+          if (speakerId) await api.deleteSpeaker(speakerId)
         } catch (err) {
           if (!(err instanceof VocalStackAPIError && err.status === 404)) return apiError(err)
         }
-        return json({ name: nameOf(req, doc), vocalstackVoice: await save(req, id, EMPTY) })
+        return answer(nameOf(req, doc), await save(req, id, EMPTY))
       },
     },
     {
       method: 'get',
-      path: '/:id/vocalstack/voice/sources',
+      path: '/:id/vocalstack/speaker/sources',
       handler: async (req) => {
         const found = await open(req, 'create')
         if (found instanceof Response) return found
         const sources = (await config.recordings?.({ doc: found.doc, req })) ?? []
         return json({
-          sources: sources.map(({ label, recordingId, sentences }): VoiceSource => ({
+          sources: sources.map(({ label, recordingId, sentences }): SpeakerSource => ({
             label,
             recordingId,
             sentences: (sentences ?? []).filter((s) => !s.draft).map(({ end, id, speaker, start, text }) => ({ end, id, speaker, start, text })),
@@ -186,7 +221,7 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     },
     {
       method: 'get',
-      path: '/:id/vocalstack/voice/clip',
+      path: '/:id/vocalstack/speaker/clip',
       handler: async (req) => {
         const found = await open(req, 'create')
         if (found instanceof Response) return found
@@ -205,7 +240,7 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     {
       // A trial voice from sentences of one of their recordings, to hear before keeping it.
       method: 'post',
-      path: '/:id/vocalstack/voice/trial',
+      path: '/:id/vocalstack/speaker/trial',
       handler: async (req) => {
         const found = await open(req, 'create')
         if (found instanceof Response) return found
@@ -218,15 +253,17 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
         if (typeof body.recordingId !== 'string' || !Number.isInteger(body.speaker) || total < PICK_MIN_S - 0.05 || total > PICK_MAX_S + 0.5) {
           return json({ error: `Pick ${PICK_MIN_S} to ${PICK_MAX_S} seconds of their speech.` }, 400)
         }
-        if (!(await ownRecording(req, doc, body.recordingId))) return json({ error: 'That recording is not one of theirs.' }, 403)
+        const source = await ownRecording(req, doc, body.recordingId)
+        if (!source) return json({ error: 'That recording is not one of theirs.' }, 403)
         try {
-          const voice = await api.voiceFromSpeaker(
-            { draft: true, name: nameOf(req, doc), recordingId: body.recordingId, spans, speaker: body.speaker as number },
+          const transcriptionId = source.transcriptionId ?? (await api.job(source.recordingId).then((j) => j.transcriptionId, () => undefined))
+          const trial = await api.speakerFromAppearance(
+            { draft: true, name: nameOf(req, doc), recordingId: source.recordingId, spans, speaker: body.speaker as number, transcriptionId },
             `payload:${collection}:${id}:trial:${randomUUID()}`,
           )
           // The trial it replaces (other samples picked) is not wanted any more.
-          if (typeof body.replace === 'string' && body.replace !== voice.id) await dropTrial(api, body.replace)
-          return json({ voice: trialOf(voice) }, 201)
+          if (typeof body.replace === 'string' && body.replace !== trial.id) await dropTrial(api, body.replace)
+          return json({ voice: trialOf(trial) }, 201)
         } catch (err) {
           return apiError(err)
         }
@@ -234,14 +271,14 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     },
     {
       method: 'get',
-      path: '/:id/vocalstack/voice/trial',
+      path: '/:id/vocalstack/speaker/trial',
       handler: async (req) => {
         const found = await open(req, 'create')
         if (found instanceof Response) return found
         try {
-          const voice = await found.api.voice(req.searchParams.get('voice') ?? '')
-          if (!voice.draft) return json({ error: 'Not a trial voice.' }, 404)
-          return json({ voice: trialOf(voice) })
+          const trial = await found.api.savedSpeaker(req.searchParams.get('voice') ?? '')
+          if (!trial.draft) return json({ error: 'Not a trial voice.' }, 404)
+          return json({ voice: trialOf(trial) })
         } catch (err) {
           return apiError(err)
         }
@@ -249,15 +286,15 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     },
     {
       method: 'get',
-      path: '/:id/vocalstack/voice/trial/preview',
+      path: '/:id/vocalstack/speaker/trial/preview',
       handler: async (req) => {
         const found = await open(req, 'hear')
         if (found instanceof Response) return found
         const format = req.searchParams.get('format') === 'caf' ? 'caf' : 'ogg'
         try {
-          const voice = await found.api.voice(req.searchParams.get('voice') ?? '')
-          if (!voice.draft) return json({ error: 'Not a trial voice.' }, 404)
-          const res = await found.api.voicePreview(voice.id, req.searchParams.get('lang') ?? undefined, format)
+          const trial = await found.api.savedSpeaker(req.searchParams.get('voice') ?? '')
+          if (!trial.draft) return json({ error: 'Not a trial voice.' }, 404)
+          const res = await found.api.speakerVoicePreview(trial.id, req.searchParams.get('lang') ?? undefined, format)
           if (res.status === 202) return json({ pending: true }, 202)
           if (!res.ok) return json({ error: `VocalStack answered ${res.status}` }, res.status >= 500 ? 502 : res.status)
           return new Response(res.body, { headers: { 'cache-control': 'private, max-age=600', 'content-type': res.headers.get('content-type') ?? 'audio/ogg' } })
@@ -267,9 +304,9 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
       },
     },
     {
-      // Keep the trial as their voice (with their permission); the voice they had before goes.
+      // Keep the trial as their saved speaker (with their permission); the one they had before goes.
       method: 'post',
-      path: '/:id/vocalstack/voice/trial/keep',
+      path: '/:id/vocalstack/speaker/trial/keep',
       handler: async (req) => {
         const found = await open(req, 'create')
         if (found instanceof Response) return found
@@ -279,13 +316,13 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
         if (typeof body.voice !== 'string') return json({ error: 'Which voice?' }, 400)
         const name = (typeof body.name === 'string' && body.name.trim() ? body.name.trim() : nameOf(req, doc)).slice(0, 60)
         try {
-          const trial = await api.voice(body.voice)
+          const trial = await api.savedSpeaker(body.voice)
           if (!trial.draft) return json({ error: 'Not a trial voice.' }, 404)
-          const voice = await api.keepVoice(trial.id, name)
-          const previous = (doc.vocalstackVoice as null | VoiceFieldData | undefined)?.voiceId
-          const data = await save(req, id, { ...fieldData(voice), consentAt: new Date().toISOString() })
-          if (previous && previous !== voice.id) await api.deleteVoice(previous).catch(() => undefined)
-          return json({ name: nameOf(req, doc), vocalstackVoice: data })
+          const speaker = await api.keepSpeaker(trial.id, name)
+          const previous = speakerData(doc).speakerId
+          const data = await save(req, id, { ...fieldData(speaker), consentAt: new Date().toISOString() })
+          if (previous && previous !== speaker.id) await api.deleteSpeaker(previous).catch(() => undefined)
+          return answer(nameOf(req, doc), data)
         } catch (err) {
           return apiError(err)
         }
@@ -293,7 +330,7 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     },
     {
       method: 'delete',
-      path: '/:id/vocalstack/voice/trial',
+      path: '/:id/vocalstack/speaker/trial',
       handler: async (req) => {
         const found = await open(req, 'create')
         if (found instanceof Response) return found
@@ -303,15 +340,15 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
     },
     {
       method: 'get',
-      path: '/:id/vocalstack/voice/preview',
+      path: '/:id/vocalstack/speaker/preview',
       handler: async (req) => {
         const found = await open(req, 'hear')
         if (found instanceof Response) return found
-        const voiceId = (found.doc.vocalstackVoice as null | VoiceFieldData | undefined)?.voiceId
-        if (!voiceId) return json({ error: 'There is no voice yet.' }, 404)
+        const { cloneId, speakerId } = speakerData(found.doc)
+        if (!speakerId || !cloneId) return json({ error: 'There is no voice yet.' }, 404)
         const format = req.searchParams.get('format') === 'caf' ? 'caf' : 'ogg'
         try {
-          const res = await found.api.voicePreview(voiceId, req.searchParams.get('lang') ?? undefined, format)
+          const res = await found.api.speakerVoicePreview(speakerId, req.searchParams.get('lang') ?? undefined, format)
           // 202: being rendered; the client asks again.
           if (res.status === 202) return json({ pending: true }, 202)
           if (!res.ok) return json({ error: `VocalStack answered ${res.status}` }, res.status >= 500 ? 502 : res.status)
@@ -322,6 +359,7 @@ export function voiceEndpoints(config: VoiceCollectionConfig, options: VocalStac
       },
     },
   ]
+  return [...endpoints, ...endpoints.map((e) => ({ ...e, path: e.path.replace('/vocalstack/speaker', '/vocalstack/voice') }))]
 }
 
 /**

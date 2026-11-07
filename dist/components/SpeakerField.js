@@ -15,25 +15,27 @@ const styles = `
 `;
 /** Ogg/Opus where the browser plays it, else CAF (Safari). */
 const previewFormat = () => (typeof Audio !== 'undefined' && new Audio().canPlayType('audio/ogg; codecs=opus') ? 'ogg' : 'caf');
-export const VoiceField = () => {
+export const SpeakerField = () => {
     const { id, collectionSlug } = useDocumentInfo();
     const { dispatchFields } = useForm();
     const { connection } = useConnection();
     const call = useAPI();
-    const base = `/${collectionSlug}/${id}/vocalstack/voice`;
+    const base = `/${collectionSlug}/${id}/vocalstack/speaker`;
     const [voice, setVoice] = useState();
     const [name, setName] = useState('');
     const [error, setError] = useState();
     const [busy, setBusy] = useState(false);
     const [creating, setCreating] = useState(false);
     const timer = useRef(undefined);
-    // Keep the form's copy in step with the server's, so saving the document keeps the voice.
+    // Keep the form's copy in step with the server's, so saving the document keeps the speaker.
     const apply = useCallback((res) => {
-        setVoice(res.vocalstackVoice);
+        setVoice(res.vocalstackSpeaker);
         if (res.name)
             setName(res.name);
-        for (const [key, value] of Object.entries(res.vocalstackVoice)) {
-            dispatchFields({ type: 'UPDATE', initialValue: value, path: `vocalstackVoice.${key}`, value });
+        for (const group of ['vocalstackSpeaker', 'vocalstackVoice']) {
+            for (const [key, value] of Object.entries(res[group] ?? {})) {
+                dispatchFields({ type: 'UPDATE', initialValue: value, path: `${group}.${key}`, value });
+            }
         }
     }, [dispatchFields]);
     const refresh = useCallback(async () => {
@@ -42,7 +44,7 @@ export const VoiceField = () => {
             const res = await call(base);
             apply(res);
             setError(undefined);
-            if (res.vocalstackVoice.state === 'training')
+            if (res.vocalstackSpeaker.state === 'training')
                 timer.current = setTimeout(refresh, POLL_MS);
         }
         catch (err) {
@@ -60,12 +62,12 @@ export const VoiceField = () => {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [id, connection?.connected]);
     const remove = async () => {
-        if (!window.confirm(`Delete ${name || 'this'} voice? Readings already made with it stay as they are.`))
+        if (!window.confirm(`Delete ${name || 'this speaker'} from VocalStack, with their cloned voice? Readings already made with it stay as they are.`))
             return;
         setBusy(true);
         try {
             apply(await call(base, { method: 'DELETE' }));
-            toast.success('Voice deleted.');
+            toast.success('Speaker deleted.');
         }
         catch (err) {
             setError(err.message);
@@ -76,7 +78,7 @@ export const VoiceField = () => {
     };
     const muted = { color: 'var(--theme-elevation-500)', fontSize: 13, margin: 0 };
     const state = voice?.state ?? 'none';
-    return (_jsxs("div", { className: "field-type vs-brand vs-voice", style: { marginBottom: 'var(--base)' }, children: [_jsx(BrandStyles, {}), _jsx("style", { children: styles }), _jsxs("div", { className: "field-label", style: { alignItems: 'center', display: 'flex', gap: 8, marginBottom: 'calc(var(--base) / 2)' }, children: [_jsx(Logo, { height: 14 }), " ", _jsx("span", { children: "Voice" })] }), !id ? (_jsx("p", { style: muted, children: "Save first, then create a voice." })) : connection && !connection.connected ? (_jsx("p", { style: muted, children: "Connect VocalStack (Settings \u2192 VocalStack) to create a voice." })) : !voice ? (_jsx("p", { style: muted, children: error ?? 'Checking…' })) : creating || state === 'none' || state === 'failed' ? (creating ? (_jsx(CreateVoice, { base: base, name: name, onCancel: () => setCreating(false), onCreated: (res) => {
+    return (_jsxs("div", { className: "field-type vs-brand vs-voice", style: { marginBottom: 'var(--base)' }, children: [_jsx(BrandStyles, {}), _jsx("style", { children: styles }), _jsxs("div", { className: "field-label", style: { alignItems: 'center', display: 'flex', gap: 8, marginBottom: 'calc(var(--base) / 2)' }, children: [_jsx(Logo, { height: 14 }), " ", _jsx("span", { children: "Speaker" })] }), !id ? (_jsx("p", { style: muted, children: "Save first, then save them as a speaker." })) : connection && !connection.connected ? (_jsx("p", { style: muted, children: "Connect VocalStack (Settings \u2192 VocalStack) to save them as a speaker." })) : !voice ? (_jsx("p", { style: muted, children: error ?? 'Checking…' })) : creating || state === 'none' || state === 'failed' ? (creating ? (_jsx(CreateVoice, { base: base, name: name, onCancel: () => setCreating(false), onCreated: (res) => {
                     apply(res);
                     setCreating(false);
                     timer.current = setTimeout(refresh, POLL_MS);
@@ -123,7 +125,7 @@ const ReadyVoice = ({ base, busy, onDelete, voice }) => {
     };
     const names = new Map(langs?.languages.map((l) => [l.code, l.name]));
     const muted = { color: 'var(--theme-elevation-500)', fontSize: 13, margin: 0 };
-    return (_jsxs("div", { style: { display: 'grid', gap: 8 }, children: [_jsxs("p", { style: muted, children: ["Ready", voice.sampleS ? `, cloned from ${Math.round(voice.sampleS)} s of speech` : '', ". Translations are read in this voice."] }), _jsxs("div", { style: { display: 'flex', gap: 6 }, children: [_jsx("select", { "aria-label": "Preview language", onChange: (e) => setLang(e.target.value), value: lang, children: (langs?.voice ?? ['en']).map((code) => (_jsx("option", { value: code, children: names.get(code) ?? code }, code))) }), _jsx(Button, { buttonStyle: "secondary", disabled: waiting, margin: false, onClick: play, size: "small", children: waiting ? 'Making…' : '▶ Hear' })] }), src && _jsx("audio", { controls: true, ref: audio, src: src, style: { width: '100%' } }), error && _jsx("p", { style: { ...muted, color: 'var(--theme-error-500)' }, children: error }), _jsx("div", { children: _jsx(Button, { buttonStyle: "error", disabled: busy, margin: false, onClick: onDelete, size: "small", children: "Delete voice" }) })] }));
+    return (_jsxs("div", { style: { display: 'grid', gap: 8 }, children: [_jsxs("p", { style: muted, children: ["Ready", voice.sampleS ? `, cloned from ${Math.round(voice.sampleS)} s of speech` : '', ". Translations are read in this voice."] }), _jsxs("div", { style: { display: 'flex', gap: 6 }, children: [_jsx("select", { "aria-label": "Preview language", onChange: (e) => setLang(e.target.value), value: lang, children: (langs?.voice ?? ['en']).map((code) => (_jsx("option", { value: code, children: names.get(code) ?? code }, code))) }), _jsx(Button, { buttonStyle: "secondary", disabled: waiting, margin: false, onClick: play, size: "small", children: waiting ? 'Making…' : '▶ Hear' })] }), src && _jsx("audio", { controls: true, ref: audio, src: src, style: { width: '100%' } }), error && _jsx("p", { style: { ...muted, color: 'var(--theme-error-500)' }, children: error }), _jsx("div", { children: _jsx(Button, { buttonStyle: "error", disabled: busy, margin: false, onClick: onDelete, size: "small", children: "Delete speaker" }) })] }));
 };
 const CreateVoice = ({ base, name, onCancel, onCreated }) => {
     const call = useAPI();

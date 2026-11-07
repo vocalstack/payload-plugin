@@ -40,7 +40,7 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
   - `speech`: `{ [lang]: { voice, cast, readIn, state, error, durationS, requestedAt, renderedAt, sentences, audio } }`. `state` is `translating` (waiting for its translation), `queued`, `running`, `failed` or `sealed`; once sealed, `sentences` are the translation in the reading's own timing, with words, for a read-along player, and `audio` is the MP3 kept in your storage.
   - `POST …/vocalstack/voices { voices: 'synthetic' | 'cloned' }`, `POST …/vocalstack/request { langs, speak? }` (translate, and read aloud unless `speak: false`; carried on by the server), `POST …/vocalstack/translate { langs }` (one step; answers `more: true` when it stopped for time), `DELETE …/vocalstack/translate?lang=`, `POST …/vocalstack/speak { langs }`, `GET …/vocalstack/speak`, and the public `GET …/vocalstack/audio?lang=`, which redirects to the reading's MP3 (or, with no `lang` or the spoken one, the recording's audio) for anyone who may read the document.
 - **Languages for listeners** (opt in with `listeners`): visitors pick any language VocalStack offers, and it is made for them and kept for everyone after. `GET /api/vocalstack/languages` is public, `POST …/vocalstack/listen { lang }` asks for a language and `GET …/vocalstack/listen?lang=` says where it stands; see below.
-- **Voices** (opt in with `voices`): documents of a collection of people get a sidebar panel to clone that person's voice from a minute of a recording they speak in, or from an uploaded sample, with their permission. Kept in a hidden `vocalstackVoice` group (`voiceId`, `state`: `none`/`training`/`ready`/`failed`, `progress`, `error`, `sampleS`, `consentAt`, `createdAt`), with `GET`/`POST`/`DELETE /api/{collection}/:id/vocalstack/voice`, `…/voice/sources` and `…/voice/preview`.
+- **Speakers** (opt in with `speakers`): documents of a collection of people get a sidebar panel that saves that person as a VocalStack speaker and clones their voice, from a minute of a recording they speak in or from an uploaded sample, with their permission. Kept in a hidden `vocalstackSpeaker` group (`speakerId`, `cloneId`, `state` of the voice: `none`/`training`/`ready`/`failed`, `progress`, `error`, `sampleS`, `consentAt`, `createdAt`), with `GET`/`POST`/`DELETE /api/{collection}/:id/vocalstack/speaker`, `…/speaker/sources` and `…/speaker/preview`.
 - **Settings → VocalStack** (a global), where an editor connects an account. The key is stored server-side and is unreadable over the REST and GraphQL APIs.
 
 ## Options
@@ -52,11 +52,11 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
 | `audioFields` | none | Audio that isn't an upload document; see below. |
 | `spokenLanguage` | auto-detect | A Whisper language code (`en`, `ro`, …). |
 | `fileURL` | the doc's `url`, made absolute | `({ doc, collection, req }) => string`: the address VocalStack fetches. Point it at your bucket's public URL to skip the Payload file proxy. |
-| `access` | signed-in users who can update the doc | Extra check for transcribing, translating, voices and the admin lookups, and for changing the connection. |
+| `access` | signed-in users who can update the doc | Extra check for transcribing, translating, speakers, voices and the admin lookups, and for changing the connection. |
 | `oneClickConnect` | `false` | Show **Connect VocalStack** (see below). |
 | `apiURL` / `dashboardURL` | `https://api.vocalstack.com` / `https://app.vocalstack.com` | |
 | `enabled` | `true` | `false` keeps the schema but removes the button and the endpoints. |
-| `voices` | none | Collections of people who get a cloned voice; see below. |
+| `speakers` | none | Collections of people saved as VocalStack speakers, each with a cloned voice; see below. (`voices`, its name in 0.5, still works.) |
 | `readings` | `{ slug: 'vocalstack-readings' }` | The upload collection finished readings are kept in, added by the plugin; `overrides: (collection) => collection` adjusts it. `false` streams readings from VocalStack instead. See below for bringing your own. |
 | `listeners` | off | `true`, or `{ languages?, speak?, access?, perHour? }`: let visitors ask for a transcript in their language; see below. |
 | `voiceMode` | the transcript's toggle | `({ collection, doc, req, row }) => 'synthetic' \| 'cloned' \| undefined`: the site decides how transcripts are read aloud, and the toggle is hidden. See below. |
@@ -80,37 +80,60 @@ vocalstackPlugin({
 
 Rows are addressed by their id: `POST /api/episodes/:id/vocalstack/transcribe?field=attachments&row=<row id>`. A new row needs saving first.
 
-### Voices
+### Speakers
 
 ```ts
 import { vocalstackPlugin } from '@vocalstack/payload'
 
 vocalstackPlugin({
-  voices: [
+  speakers: [
     {
       collection: 'speakers',
       // Recordings this speaker is in, offered as the sample to clone from.
       recordings: async ({ doc, req }) => {
         const { docs } = await req.payload.find({ collection: 'episodes', where: { speaker: { equals: doc.id } }, req })
-        return docs.flatMap((e) => (e.vocalstack?.recordingId ? [{ label: e.title, recordingId: e.vocalstack.recordingId, sentences: e.vocalstack.sentences }] : []))
+        return docs.flatMap((e) => (e.vocalstack?.recordingId ? [{ label: e.title, recordingId: e.vocalstack.recordingId, sentences: e.vocalstack.sentences, transcriptionId: e.vocalstack.transcriptionId }] : []))
       },
     },
   ],
 })
 ```
 
-A sample from a recording can only come from the recordings `recordings` returns for that document: cloning, and hearing a stretch first (`GET /:id/vocalstack/voice/clip`), refuse any other.
+A sample from a recording can only come from the recordings `recordings` returns for that document: cloning, and hearing a stretch first (`GET /:id/vocalstack/speaker/clip`), refuse any other. Pass each recording's `transcriptionId` too, or the plugin looks it up.
 
-Cloning needs at least 30 seconds of the person speaking alone (a minute is better, at most two), and the editor confirms they have the person's permission. From a recording, the editor clicks where the stretch starts and hears it before cloning; the plugin takes it from VocalStack. An uploaded sample is sent through your server, so on hosts that cap request bodies (Vercel: 4.5 MB) keep it to a minute or two of MP3 or M4A. Training takes a few minutes; the panel follows it. Deleting the voice deletes it in VocalStack too. Voices are kept as library voices: when VocalStack transcribes a new recording, it checks the speakers against them first.
+Cloning needs at least 30 seconds of the person speaking alone (a minute is better, at most two), and the editor confirms they have the person's permission. From a recording, the editor clicks where the stretch starts and hears it before cloning; the plugin takes it from VocalStack. An uploaded sample is sent through your server, so on hosts that cap request bodies (Vercel: 4.5 MB) keep it to a minute or two of MP3 or M4A. Training takes a few minutes; the panel follows it. Deleting the speaker deletes them and their voice in VocalStack too. When VocalStack transcribes a new recording, it checks who speaks against your saved speakers first.
 
 A cloned voice only ever reads words its own speaker said. With `cloned` (from the toggle, or from `voiceMode` once a person has a voice), each speaker VocalStack has matched to a clone is read in it: the speaker it was made from, or one VocalStack recognised as the same person when it transcribed the recording. Everyone else is read in a stock voice. VocalStack doesn't always recognise a speaker, and recordings transcribed before the voice existed are not matched, so a reading reports what it got as `speech[lang].readIn`: `cloned`, `synthetic`, or `mixed`.
 
 ```ts
 voiceMode: async ({ doc, req }) => {
   const speaker = await req.payload.findByID({ collection: 'speakers', id: doc.speaker, depth: 0, req })
-  return speaker.vocalstackVoice?.state === 'ready' ? 'cloned' : 'synthetic'
+  return speakerData(speaker).state === 'ready' ? 'cloned' : 'synthetic'
 }
 ```
+
+`speakerData(doc)` (from `@vocalstack/payload`) reads the `vocalstackSpeaker` group, or the `vocalstackVoice` group of a document 0.5 saved and nobody has opened since.
+
+### Upgrading from 0.5
+
+0.6 follows VocalStack's rename of saved voices to **speakers** (`/v1/speakers`; a speaker's voice is only the sound, its clone). It talks to VocalStack before and after that change: it calls `/v1/speakers` first and falls back to `/v1/voices` on a 404, so nothing needs doing on the day the API changes.
+
+- **Option**: `voices` is now `speakers`. `voices` is still read when `speakers` is not set. Types: `SpeakerCollectionConfig`, `SpeakerSource`, `SpeakerFieldData`, `CloneState` (the old names are deprecated aliases).
+- **Fields**: speaker collections get a new hidden group, `vocalstackSpeaker` (`speakerId`, `cloneId`, and the fields `vocalstackVoice` had). The `vocalstackVoice` group stays in the schema and is kept in step (`voiceId` is the clone's id) for one more minor version, so code reading it keeps working; move it to `speakerData(doc)` or `vocalstackSpeaker`. The sidebar field is now `vocalstackSpeakerPanel` (a UI field, nothing stored).
+- **Data**: nothing is lost. A document still holding only `vocalstackVoice` is read through it and copied into `vocalstackSpeaker` the first time its panel opens. To copy them all at once, call `migrateSpeakerFields({ collection, payload, req })` from a migration:
+
+```ts
+// migrations/20261107_vocalstack_speakers.ts, after `payload migrate:create`
+import { migrateSpeakerFields } from '@vocalstack/payload'
+import type { MigrateUpArgs } from '@payloadcms/db-postgres'
+
+export async function up({ payload, req }: MigrateUpArgs) {
+  await migrateSpeakerFields({ collection: 'speakers', payload, req })
+}
+```
+
+- **Run** `payload generate:importmap` (the panel's component is now `SpeakerField`), and with Postgres or SQLite `payload migrate:create` for the new columns (the old ones are kept).
+- **Endpoints**: `/:id/vocalstack/speaker…` replaces `/:id/vocalstack/voice…`; the old paths still answer. Answers carry `vocalstackSpeaker` (and `vocalstackVoice` as before).
 
 ### Translations and readings
 

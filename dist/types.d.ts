@@ -62,10 +62,13 @@ export type VocalStackPluginOptions = {
         req: PayloadRequest;
     }) => boolean | Promise<boolean>;
     /**
-     * Collections of people (speakers, presenters) that each get a cloned VocalStack voice:
-     * made from a stretch of a recording they speak in, or from a sample, with their permission.
+     * Collections of people (speakers, presenters) that are each saved as a VocalStack speaker,
+     * with a cloned voice made from a stretch of a recording they speak in, or from a sample,
+     * with their permission.
      */
-    voices?: VoiceCollectionConfig[];
+    speakers?: SpeakerCollectionConfig[];
+    /** @deprecated Renamed to `speakers`; still read when `speakers` is not set. */
+    voices?: SpeakerCollectionConfig[];
     /**
      * Let the site's visitors ask for a transcript in their own language: it is translated,
      * read aloud where VocalStack has a voice for it, and kept on the document (and the
@@ -99,9 +102,9 @@ export type ListenerOptions = {
     /** New languages one visitor (by IP address) may ask for in an hour, on this server. Default 10. */
     perHour?: number;
 };
-export type VoiceCollectionConfig = {
+export type SpeakerCollectionConfig = {
     collection: CollectionSlug;
-    /** The voice's name in VocalStack. Default: the collection's `useAsTitle` field, else `name`. */
+    /** The speaker's name in VocalStack. Default: the collection's `useAsTitle` field, else `name`. */
     name?: (args: {
         doc: Record<string, unknown>;
     }) => string;
@@ -109,25 +112,48 @@ export type VoiceCollectionConfig = {
     recordings?: (args: {
         doc: Record<string, unknown>;
         req: PayloadRequest;
-    }) => Promise<VoiceSource[]> | VoiceSource[];
+    }) => Promise<SpeakerSource[]> | SpeakerSource[];
 };
 /** A transcribed recording to take a voice sample from. */
-export type VoiceSource = {
+export type SpeakerSource = {
     label: string;
     recordingId: string;
     sentences?: TranscriptSentence[];
+    transcriptionId?: string;
 };
-export type VoiceState = 'failed' | 'none' | 'ready' | 'training';
-/** The `vocalstackVoice` group on a voice collection's documents. */
+export type CloneState = 'failed' | 'none' | 'ready' | 'training';
+/** The `vocalstackSpeaker` group on a speaker collection's documents. */
+export type SpeakerFieldData = {
+    cloneId?: null | string;
+    consentAt?: null | string;
+    createdAt?: null | string;
+    error?: null | string;
+    progress?: null | number;
+    sampleS?: null | number;
+    speakerId?: null | string;
+    state?: null | CloneState;
+};
+/** @deprecated The `vocalstackVoice` group of 0.5 and earlier, kept in step for a release; read `vocalstackSpeaker`. */
 export type VoiceFieldData = {
     consentAt?: null | string;
     createdAt?: null | string;
     error?: null | string;
     progress?: null | number;
     sampleS?: null | number;
-    state?: null | VoiceState;
+    state?: null | CloneState;
     voiceId?: null | string;
 };
+export type SpeakerAnswer = {
+    name?: string;
+    vocalstackSpeaker: SpeakerFieldData;
+    vocalstackVoice?: VoiceFieldData;
+};
+/** @deprecated Renamed to `SpeakerCollectionConfig`. */
+export type VoiceCollectionConfig = SpeakerCollectionConfig;
+/** @deprecated Renamed to `SpeakerSource`. */
+export type VoiceSource = SpeakerSource;
+/** @deprecated Renamed to `CloneState`. */
+export type VoiceState = CloneState;
 export type Translation = {
     /** The transcript's sentences (same ids and times), their text translated. */
     sentences: TranscriptSentence[];

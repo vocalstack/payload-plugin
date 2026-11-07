@@ -4,7 +4,7 @@ import { Button, toast, useConfig, useDocumentInfo, useForm } from '@payloadcms/
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import type { Languages } from '../api.js'
-import type { VoiceFieldData, VoiceSource } from '../types.js'
+import type { SpeakerAnswer, SpeakerFieldData, SpeakerSource } from '../types.js'
 
 import { BrandStyles, Logo } from './Brand.js'
 import { useAPI, useConnection } from './useConnection.js'
@@ -23,27 +23,29 @@ const styles = `
 /** Ogg/Opus where the browser plays it, else CAF (Safari). */
 const previewFormat = () => (typeof Audio !== 'undefined' && new Audio().canPlayType('audio/ogg; codecs=opus') ? 'ogg' : 'caf')
 
-export const VoiceField: React.FC = () => {
+export const SpeakerField: React.FC = () => {
   const { id, collectionSlug } = useDocumentInfo()
   const { dispatchFields } = useForm()
   const { connection } = useConnection()
   const call = useAPI()
-  const base = `/${collectionSlug}/${id}/vocalstack/voice`
+  const base = `/${collectionSlug}/${id}/vocalstack/speaker`
 
-  const [voice, setVoice] = useState<VoiceFieldData>()
+  const [voice, setVoice] = useState<SpeakerFieldData>()
   const [name, setName] = useState('')
   const [error, setError] = useState<string>()
   const [busy, setBusy] = useState(false)
   const [creating, setCreating] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
-  // Keep the form's copy in step with the server's, so saving the document keeps the voice.
+  // Keep the form's copy in step with the server's, so saving the document keeps the speaker.
   const apply = useCallback(
-    (res: { name?: string; vocalstackVoice: VoiceFieldData }) => {
-      setVoice(res.vocalstackVoice)
+    (res: SpeakerAnswer) => {
+      setVoice(res.vocalstackSpeaker)
       if (res.name) setName(res.name)
-      for (const [key, value] of Object.entries(res.vocalstackVoice)) {
-        dispatchFields({ type: 'UPDATE', initialValue: value, path: `vocalstackVoice.${key}`, value })
+      for (const group of ['vocalstackSpeaker', 'vocalstackVoice'] as const) {
+        for (const [key, value] of Object.entries(res[group] ?? {})) {
+          dispatchFields({ type: 'UPDATE', initialValue: value, path: `${group}.${key}`, value })
+        }
       }
     },
     [dispatchFields],
@@ -52,10 +54,10 @@ export const VoiceField: React.FC = () => {
   const refresh = useCallback(async () => {
     clearTimeout(timer.current)
     try {
-      const res = await call<{ name: string; vocalstackVoice: VoiceFieldData }>(base)
+      const res = await call<SpeakerAnswer>(base)
       apply(res)
       setError(undefined)
-      if (res.vocalstackVoice.state === 'training') timer.current = setTimeout(refresh, POLL_MS)
+      if (res.vocalstackSpeaker.state === 'training') timer.current = setTimeout(refresh, POLL_MS)
     } catch (err) {
       setError((err as Error).message)
       // Unavailable for now: keep checking on a training voice, more slowly.
@@ -71,11 +73,11 @@ export const VoiceField: React.FC = () => {
   }, [id, connection?.connected])
 
   const remove = async () => {
-    if (!window.confirm(`Delete ${name || 'this'} voice? Readings already made with it stay as they are.`)) return
+    if (!window.confirm(`Delete ${name || 'this speaker'} from VocalStack, with their cloned voice? Readings already made with it stay as they are.`)) return
     setBusy(true)
     try {
       apply(await call(base, { method: 'DELETE' }))
-      toast.success('Voice deleted.')
+      toast.success('Speaker deleted.')
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -91,12 +93,12 @@ export const VoiceField: React.FC = () => {
       <BrandStyles />
       <style>{styles}</style>
       <div className="field-label" style={{ alignItems: 'center', display: 'flex', gap: 8, marginBottom: 'calc(var(--base) / 2)' }}>
-        <Logo height={14} /> <span>Voice</span>
+        <Logo height={14} /> <span>Speaker</span>
       </div>
       {!id ? (
-        <p style={muted}>Save first, then create a voice.</p>
+        <p style={muted}>Save first, then save them as a speaker.</p>
       ) : connection && !connection.connected ? (
-        <p style={muted}>Connect VocalStack (Settings → VocalStack) to create a voice.</p>
+        <p style={muted}>Connect VocalStack (Settings → VocalStack) to save them as a speaker.</p>
       ) : !voice ? (
         <p style={muted}>{error ?? 'Checking…'}</p>
       ) : creating || state === 'none' || state === 'failed' ? (
@@ -140,7 +142,7 @@ export const VoiceField: React.FC = () => {
   )
 }
 
-const ReadyVoice: React.FC<{ base: string; busy: boolean; onDelete: () => void; voice: VoiceFieldData }> = ({ base, busy, onDelete, voice }) => {
+const ReadyVoice: React.FC<{ base: string; busy: boolean; onDelete: () => void; voice: SpeakerFieldData }> = ({ base, busy, onDelete, voice }) => {
   const call = useAPI()
   const [langs, setLangs] = useState<Languages>()
   const [lang, setLang] = useState('en')
@@ -200,7 +202,7 @@ const ReadyVoice: React.FC<{ base: string; busy: boolean; onDelete: () => void; 
       {error && <p style={{ ...muted, color: 'var(--theme-error-500)' }}>{error}</p>}
       <div>
         <Button buttonStyle="error" disabled={busy} margin={false} onClick={onDelete} size="small">
-          Delete voice
+          Delete speaker
         </Button>
       </div>
     </div>
@@ -211,12 +213,12 @@ const CreateVoice: React.FC<{
   base: string
   name: string
   onCancel: () => void
-  onCreated: (res: { name?: string; vocalstackVoice: VoiceFieldData }) => void
+  onCreated: (res: SpeakerAnswer) => void
 }> = ({ base, name, onCancel, onCreated }) => {
   const call = useAPI()
   const { serverURL, api } = useAPIBase()
   const [tab, setTab] = useState<'file' | 'recording' | 'record'>('recording')
-  const [sources, setSources] = useState<VoiceSource[]>()
+  const [sources, setSources] = useState<SpeakerSource[]>()
   const [file, setFile] = useState<File>()
   const [fileS, setFileS] = useState<number>()
   const [consent, setConsent] = useState(false)
@@ -224,7 +226,7 @@ const CreateVoice: React.FC<{
   const [error, setError] = useState<string>()
 
   useEffect(() => {
-    call<{ sources: VoiceSource[] }>(`${base}/sources`).then(
+    call<{ sources: SpeakerSource[] }>(`${base}/sources`).then(
       (r) => {
         setSources(r.sources)
         if (!r.sources.length) setTab('record')

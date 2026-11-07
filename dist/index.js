@@ -2,10 +2,11 @@ import { connectionEndpoints } from './endpoints/connection.js';
 import { refreshAfterRead, speechEndpoints } from './endpoints/speech.js';
 import { streamEndpoint } from './endpoints/stream.js';
 import { transcribeEndpoints } from './endpoints/transcribe.js';
-import { lookupEndpoints, voiceEndpoints } from './endpoints/voices.js';
+import { lookupEndpoints, speakerEndpoints } from './endpoints/voices.js';
 import { readingsCollection, readingsSlug } from './readings.js';
 import { settingsGlobal } from './settings.js';
 export { spokenSentences, timedTokens, transcriptText } from './text.js';
+export { migrateSpeakerFields, speakerData } from './endpoints/voices.js';
 const isAudioDoc = (data) => typeof data?.mimeType === 'string' && data.mimeType.startsWith('audio/');
 /** An upload collection that can hold audio: `audio/*`, a wildcard, or no restriction at all. */
 function acceptsAudio(collection) {
@@ -84,22 +85,38 @@ function transcriptionFields(enabled, options, target) {
         },
     ];
 }
-/** A person's cloned voice: the panel, and what VocalStack says about the voice. */
-function voiceFields(enabled) {
+/** A person saved as a VocalStack speaker: the panel, and what VocalStack says about the speaker and their cloned voice. */
+function speakerFields(enabled) {
     return [
         ...(enabled
             ? [
                 {
-                    name: 'vocalstackVoicePanel',
+                    name: 'vocalstackSpeakerPanel',
                     type: 'ui',
-                    admin: { components: { Field: '@vocalstack/payload/client#VoiceField' }, position: 'sidebar' },
+                    admin: { components: { Field: '@vocalstack/payload/client#SpeakerField' }, position: 'sidebar' },
                 },
             ]
             : []),
         {
+            name: 'vocalstackSpeaker',
+            type: 'group',
+            label: 'Speaker',
+            admin: { hidden: true },
+            fields: [
+                { name: 'speakerId', type: 'text', ...hidden },
+                { name: 'cloneId', type: 'text', ...hidden },
+                { name: 'state', type: 'select', defaultValue: 'none', options: ['none', 'training', 'ready', 'failed'], ...hidden },
+                { name: 'progress', type: 'number', ...hidden },
+                { name: 'error', type: 'text', ...hidden },
+                { name: 'sampleS', type: 'number', ...hidden },
+                { name: 'consentAt', type: 'date', ...hidden },
+                { name: 'createdAt', type: 'date', ...hidden },
+            ],
+        },
+        {
             name: 'vocalstackVoice',
             type: 'group',
-            label: 'Voice',
+            label: 'Voice (0.5)',
             admin: { hidden: true },
             fields: [
                 { name: 'voiceId', type: 'text', ...hidden },
@@ -151,20 +168,20 @@ export const vocalstackPlugin = (options = {}) => (config) => {
     const readings = readingsSlug(options);
     const uploads = new Set(options.collections ?? collections.filter((c) => c.slug !== readings && acceptsAudio(c)).map((c) => c.slug));
     const audioFields = options.audioFields ?? [];
-    const voices = options.voices ?? [];
-    for (const v of voices) {
+    const speakers = options.speakers ?? options.voices ?? [];
+    for (const v of speakers) {
         if (!collections.some((c) => c.slug === v.collection))
-            throw new Error(`vocalstackPlugin: no collection "${v.collection}" for voices`);
+            throw new Error(`vocalstackPlugin: no collection "${v.collection}" for speakers`);
     }
     return {
         ...config,
         collections: [...collections, ...(readings && !collections.some((c) => c.slug === readings) ? [(options.readings && options.readings.overrides ? options.readings.overrides : (c) => c)(readingsCollection(readings))] : [])].map((original) => {
-            const voice = voices.find((v) => v.collection === original.slug);
-            const collection = voice
+            const speaker = speakers.find((v) => v.collection === original.slug);
+            const collection = speaker
                 ? {
                     ...original,
-                    endpoints: enabled ? [...(original.endpoints || []), ...voiceEndpoints(voice, options)] : original.endpoints,
-                    fields: [...original.fields, ...voiceFields(enabled)],
+                    endpoints: enabled ? [...(original.endpoints || []), ...speakerEndpoints(speaker, options)] : original.endpoints,
+                    fields: [...original.fields, ...speakerFields(enabled)],
                 }
                 : original;
             const rowFields = audioFields.filter((f) => f.collection === collection.slug);

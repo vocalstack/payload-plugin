@@ -51,16 +51,15 @@ export type Transcript = {
         text: string;
     }[];
 };
-export type Voice = {
+export type SavedSpeaker = {
+    cloneId: null | string;
     createdAt: string;
-    /** A trial voice, to hear before it is kept. */
     draft?: boolean;
     error?: null | string;
     id: string;
     name: string;
     progress: number;
     sampleS: number;
-    /** `training`, `ready` or `failed`. */
     state: string;
 };
 export type VoiceOption = {
@@ -145,8 +144,8 @@ export declare class VocalStackAPI {
     }>;
     /**
      * Read translations aloud, one job per language. `cloned` reads each speaker in their own cloned
-     * voice where VocalStack can use one (a clone of that speaker, made with their permission, or a
-     * saved voice VocalStack recognised as them) and in a stock voice otherwise; `synthetic` reads
+     * voice where VocalStack can use one (a clone of that speaker, made with their permission, or the
+     * clone of a saved speaker VocalStack recognised as them) and in a stock voice otherwise; `synthetic` reads
      * everyone in stock voices. Each track says which it got (`voices`: cloned, synthetic or mixed).
      * A clone only ever reads words its own speaker said.
      */
@@ -161,18 +160,18 @@ export declare class VocalStackAPI {
     }): Promise<string>;
     /** A stretch of the recording as WAV (16 kHz mono), at most 120 s. */
     clip(recordingId: string, startS: number, endS: number): Promise<Response>;
-    voice(id: string): Promise<Voice>;
-    /** Clone a voice from a recorded sample (30 s or more). Needs the speaker's permission. */
-    createVoice(sample: Blob, fileName: string, meta: {
+    savedSpeaker(id: string): Promise<SavedSpeaker>;
+    /** Save a speaker from a recorded sample (30 s or more), cloning their voice. Needs the speaker's permission. */
+    createSpeaker(sample: Blob, fileName: string, meta: {
         consent: boolean;
         name: string;
-    }, idempotencyKey: string): Promise<Voice>;
+    }, idempotencyKey: string): Promise<SavedSpeaker>;
     /**
-     * Clone a speaker's voice from stretches of a transcribed recording (5–60 s in all). `draft`
-     * makes a trial voice to hear first; keep it with `keepVoice`, or delete it. A library voice:
-     * VocalStack looks for library voices first when it works out who speaks in a new recording.
+     * Save a speaker from stretches of a transcribed recording (5–60 s in all), cloning their voice.
+     * `draft` makes a trial to hear first; keep it with `keepSpeaker`, or delete it. Saved speakers
+     * are the ones VocalStack looks for first when it works out who speaks in a new recording.
      */
-    voiceFromSpeaker(opts: {
+    speakerFromAppearance(opts: {
         draft: boolean;
         name: string;
         recordingId: string;
@@ -181,16 +180,17 @@ export declare class VocalStackAPI {
             start: number;
         }[];
         speaker: number;
-    }, idempotencyKey: string): Promise<Voice>;
-    /** Keep a trial voice, as `name`, with the speaker's permission, in the library. */
-    keepVoice(id: string, name: string): Promise<Voice>;
-    deleteVoice(id: string): Promise<unknown>;
+        transcriptionId?: string;
+    }, idempotencyKey: string): Promise<SavedSpeaker>;
+    /** Keep a trial speaker, as `name`, with the speaker's permission. */
+    keepSpeaker(id: string, name: string): Promise<SavedSpeaker>;
+    deleteSpeaker(id: string): Promise<void>;
+    /** The saved speaker's cloned voice speaking a few seconds of `lang`, Ogg/Opus or CAF. 202 while it is being made. */
+    speakerVoicePreview(id: string, lang?: string, format?: 'caf' | 'ogg'): Promise<Response>;
     availableVoices(lang: string, recordingId?: string): Promise<{
         lang: string;
         voices: VoiceOption[];
     }>;
-    /** The cloned voice speaking a few seconds of `lang`, Ogg/Opus or CAF. 202 while it is being made. */
-    voicePreview(id: string, lang?: string, format?: 'caf' | 'ogg'): Promise<Response>;
 }
 /** A short label for the connected account, from whatever `/v1/me` carries. */
 export declare function accountLabel(me: Record<string, unknown>): string | undefined;

@@ -4,7 +4,7 @@ import { Button, toast, useConfig } from '@payloadcms/ui'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import type { Languages } from '../api.js'
-import type { TranscriptSentence, VoiceFieldData, VoiceSource } from '../types.js'
+import type { SpeakerAnswer, SpeakerSource, TranscriptSentence } from '../types.js'
 
 import { useAPI } from './useConnection.js'
 
@@ -180,8 +180,8 @@ const SampleAudio: React.FC<{ src: string }> = ({ src }) => {
 export const VoiceFromRecording: React.FC<{
   base: string
   name: string
-  onCreated: (res: { name?: string; vocalstackVoice: VoiceFieldData }) => void
-  sources: VoiceSource[]
+  onCreated: (res: SpeakerAnswer) => void
+  sources: SpeakerSource[]
 }> = ({ base, name, onCreated, sources }) => {
   const call = useAPI()
   const apiBase = useBase()
@@ -261,12 +261,12 @@ export const VoiceFromRecording: React.FC<{
     setBusy(true)
     setError(undefined)
     try {
-      const res = await call<{ name?: string; vocalstackVoice: VoiceFieldData }>(`${base}/trial/keep`, {
+      const res = await call<SpeakerAnswer>(`${base}/trial/keep`, {
         body: JSON.stringify({ consent, name: voiceName, voice: trial.id }),
         method: 'POST',
       })
       kept.current = true
-      toast.success('Voice saved.')
+      toast.success('Speaker saved.')
       onCreated(res)
     } catch (err) {
       setError((err as Error).message)
@@ -434,7 +434,7 @@ export const VoiceFromRecording: React.FC<{
               Back
             </Button>
             <Button disabled={busy || !consent || !voiceName.trim()} margin={false} onClick={keep} size="small">
-              {busy ? 'Saving…' : 'Save voice'}
+              {busy ? 'Saving…' : 'Save speaker'}
             </Button>
           </div>
         </>
