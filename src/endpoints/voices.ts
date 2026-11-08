@@ -256,7 +256,8 @@ export function speakerEndpoints(config: SpeakerCollectionConfig, options: Vocal
         const source = await ownRecording(req, doc, body.recordingId)
         if (!source) return json({ error: 'That recording is not one of theirs.' }, 403)
         try {
-          const transcriptionId = source.transcriptionId ?? (await api.job(source.recordingId).then((j) => j.transcriptionId, () => undefined))
+          // A failed lookup is an error to show, not a reason to try the retired /v1/voices/from-speaker.
+          const transcriptionId = source.transcriptionId ?? (await api.job(source.recordingId)).transcriptionId
           const trial = await api.speakerFromAppearance(
             { draft: true, name: nameOf(req, doc), recordingId: source.recordingId, spans, speaker: body.speaker as number, transcriptionId },
             `payload:${collection}:${id}:trial:${randomUUID()}`,

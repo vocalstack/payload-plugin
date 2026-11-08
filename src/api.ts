@@ -307,6 +307,8 @@ export class VocalStackAPI {
   }
 
   savedSpeaker(id: string) {
+    // An empty id would read GET /v1/speakers/, the list, as if it were one speaker.
+    if (!id) return Promise.reject(new VocalStackAPIError(404, 'not_found', 'No such speaker.'))
     return this.#speaker('GET', both(`/${encodeURIComponent(id)}`))
   }
 
@@ -330,7 +332,8 @@ export class VocalStackAPI {
     const { recordingId, speaker, transcriptionId, ...rest } = opts
     const common = { ...rest, consent: true, library: true }
     return this.#speaker('POST', { speakers: transcriptionId ? '/v1/speakers/from-appearance' : undefined, voices: '/v1/voices/from-speaker' }, {
-      body: (route) => (route === 'speakers' ? { ...common, appearance: speaker, transcriptionId } : { ...common, recordingId, speaker }),
+      // The spans are times in this recording: name it, or the server takes the latest one the speaker is heard in.
+      body: (route) => (route === 'speakers' ? { ...common, appearance: speaker, recordingId, transcriptionId } : { ...common, recordingId, speaker }),
       idempotencyKey,
     })
   }
