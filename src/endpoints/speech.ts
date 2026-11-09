@@ -163,6 +163,10 @@ async function keepReading(req: PayloadRequest, api: VocalStackAPI, slug: Collec
     res = await fetch(src, { signal: AbortSignal.timeout(90_000) })
     if (res.status !== 400) break
   }
+  // The track is not there to keep any more (VocalStack re-reads a reading when its clone is
+  // rebuilt, or found nothing to read aloud): follow it as being made again, so the next look
+  // reads its state instead of downloading it forever.
+  if (res?.status === 404) return { ...speech, done: 0, error: null, requestedAt: new Date().toISOString(), state: 'running' }
   if (!res?.ok) throw new VocalStackAPIError(502, 'unavailable', UNAVAILABLE)
   const data = Buffer.from(await res.arrayBuffer())
   const doc = (await req.payload.create({
