@@ -8,13 +8,22 @@ import type { SpeakerAnswer, SpeakerFieldData, SpeakerSource } from '../types.js
 
 import { BrandStyles, Logo } from './Brand.js'
 import { useAPI, useConnection } from './useConnection.js'
-import { RecordSample, VoiceFromRecording } from './VoiceSamples.js'
+import { RecordSample, sampleStyles, VoiceFromRecording } from './VoiceSamples.js'
 
 const POLL_MS = 3000
 const MIN_S = 30
 
 const styles = `
-  .vs-voice-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+  .vs-create-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .vs-seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: var(--style-radius-m, 6px); background: var(--theme-elevation-100); }
+  .vs-seg button { border: 0; background: none; color: var(--theme-elevation-600); font: inherit; font-size: 13px; line-height: 1.2;
+    padding: 6px 12px; border-radius: var(--style-radius-s, 4px); cursor: pointer; white-space: nowrap; }
+  .vs-seg button:hover { color: var(--theme-text); }
+  .vs-seg button[aria-pressed='true'] { background: var(--theme-elevation-0); color: var(--theme-text); font-weight: 500; box-shadow: 0 1px 2px rgb(0 0 0 / .25); }
+  .vs-seg button:focus-visible, .vs-link:focus-visible { outline: 2px solid var(--vs-accent); outline-offset: 1px; }
+  .vs-link { border: 0; background: none; padding: 4px 2px; font: inherit; font-size: 13px; color: var(--theme-elevation-600); cursor: pointer; }
+  .vs-link:hover:not(:disabled) { color: var(--theme-text); text-decoration: underline; }
+  .vs-link:disabled { opacity: .5; cursor: default; }
   .vs-voice select, .vs-voice input[type=file] { width: 100%; font: inherit; }
   .vs-voice select { padding: 6px 8px; border: 1px solid var(--theme-elevation-150); border-radius: var(--style-radius-s, 4px);
     background: var(--theme-input-bg, var(--theme-elevation-0)); color: var(--theme-text); }
@@ -91,7 +100,7 @@ export const SpeakerField: React.FC = () => {
   return (
     <div className="field-type vs-brand vs-voice" style={{ marginBottom: 'var(--base)' }}>
       <BrandStyles />
-      <style>{styles}</style>
+      <style>{styles + sampleStyles}</style>
       <div className="field-label" style={{ alignItems: 'center', display: 'flex', gap: 8, marginBottom: 'calc(var(--base) / 2)' }}>
         <Logo height={14} /> <span>Speaker</span>
       </div>
@@ -186,7 +195,7 @@ const ReadyVoice: React.FC<{ base: string; busy: boolean; onDelete: () => void; 
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       <p style={muted}>Ready{voice.sampleS ? `, cloned from ${Math.round(voice.sampleS)} s of speech` : ''}. Translations are read in this voice.</p>
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div className="vs-row">
         <select aria-label="Preview language" onChange={(e) => setLang(e.target.value)} value={lang}>
           {(langs?.voice ?? ['en']).map((code) => (
             <option key={code} value={code}>
@@ -283,12 +292,17 @@ const CreateVoice: React.FC<{
 
   return (
     <div style={{ display: 'grid', gap: 10 }}>
-      <div className="vs-voice-tabs">
-        {tabs.map(([key, label]) => (
-          <Button buttonStyle={tab === key ? 'primary' : 'secondary'} key={key} margin={false} onClick={() => switchTo(key)} size="small">
-            {label}
-          </Button>
-        ))}
+      <div className="vs-create-head">
+        <div aria-label="Make the voice from" className="vs-seg" role="group">
+          {tabs.map(([key, label]) => (
+            <button aria-pressed={tab === key} key={key} onClick={() => switchTo(key)} type="button">
+              {label}
+            </button>
+          ))}
+        </div>
+        <button className="vs-link" disabled={busy} onClick={onCancel} type="button">
+          Cancel
+        </button>
       </div>
 
       {tab === 'recording' ? (
@@ -322,18 +336,13 @@ const CreateVoice: React.FC<{
             <span>I have {name || 'their'}&rsquo;s permission to clone their voice.</span>
           </label>
           {error && <p style={{ ...muted, color: 'var(--theme-error-500)' }}>{error}</p>}
-          <div>
+          <div className="vs-actions">
             <Button disabled={busy || !consent || !longEnough || !file} margin={false} onClick={upload} size="small">
               {busy ? 'Creating…' : 'Create voice'}
             </Button>
           </div>
         </>
       )}
-      <div>
-        <Button buttonStyle="secondary" disabled={busy} margin={false} onClick={onCancel} size="small">
-          Cancel
-        </Button>
-      </div>
     </div>
   )
 }

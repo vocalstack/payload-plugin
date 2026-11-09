@@ -41,6 +41,11 @@ export const sampleStyles = `
   .vs-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .vs-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--theme-elevation-150); border-radius: 12px; padding: 2px 4px 2px 10px; font-size: 12px; }
   .vs-chip button { border: 0; background: none; cursor: pointer; color: var(--theme-elevation-500); }
+  .vs-row { display: flex; gap: 8px; align-items: stretch; }
+  .vs-row select { flex: 1; min-width: 0; }
+  .vs-row .btn { flex: none; white-space: nowrap; }
+  .vs-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 12px; border-top: 1px solid var(--theme-elevation-100); }
+  .vs-actions .btn { min-width: 84px; justify-content: center; }
   .vs-chips--none { border: 1px dashed var(--theme-elevation-200); border-radius: 12px; padding: 4px 10px; font-size: 12px; color: var(--theme-elevation-500); }
 `
 
@@ -391,7 +396,7 @@ export const VoiceFromRecording: React.FC<{
           ) : (
             <span className="vs-chips--none">No samples picked yet</span>
           )}
-          <div>
+          <div className="vs-actions">
             <Button disabled={!enough || busy} margin={false} onClick={tryVoice} size="small">
               Next
             </Button>
@@ -408,7 +413,7 @@ export const VoiceFromRecording: React.FC<{
           ) : (
             <TrialPreview base={base} voice={trial.id} />
           )}
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div className="vs-actions">
             <Button buttonStyle="secondary" margin={false} onClick={() => setStep(1)} size="small">
               Back
             </Button>
@@ -429,7 +434,7 @@ export const VoiceFromRecording: React.FC<{
             <input checked={consent} onChange={(e) => setConsent(e.target.checked)} style={{ marginTop: 3 }} type="checkbox" />
             <span>I have {name || 'their'}&rsquo;s permission to clone their voice.</span>
           </label>
-          <div style={{ display: 'flex', gap: 6 }}>
+          <div className="vs-actions">
             <Button buttonStyle="secondary" disabled={busy} margin={false} onClick={() => setStep(2)} size="small">
               Back
             </Button>
@@ -488,7 +493,7 @@ const TrialPreview: React.FC<{ base: string; voice: string }> = ({ base, voice }
   return (
     <div style={{ display: 'grid', gap: 8 }}>
       <p style={{ color: 'var(--theme-elevation-500)', fontSize: 13, margin: 0 }}>Hear it before you keep it. Not right? Go back and pick other samples.</p>
-      <div style={{ display: 'flex', gap: 6 }}>
+      <div className="vs-row">
         <select aria-label="Preview language" onChange={(e) => setLang(e.target.value)} value={lang}>
           {(langs?.voice ?? ['en']).map((code) => (
             <option key={code} value={code}>

@@ -34,7 +34,9 @@ const styles = `
   .vs-bar span::after { content: ''; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent);
     animation: vs-sweep 1.4s ease-in-out infinite; }
   @keyframes vs-sweep { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
-  @media (prefers-reduced-motion: reduce) { .vs-spin, .vs-bar span::after { animation: none; } }
+  .vs-bar--wait span { width: 30% !important; animation: vs-slide 1.6s ease-in-out infinite; transition: none; }
+  @keyframes vs-slide { from { left: -30%; } to { left: 100%; } }
+  @media (prefers-reduced-motion: reduce) { .vs-spin, .vs-bar span::after, .vs-bar--wait span { animation: none; } }
 `
 
 const TRANSLATING = 'Translating…'
@@ -244,6 +246,8 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
                 <Progress
                   done={s.done ?? 0}
                   label={s.state === 'queued' ? 'Waiting to be read aloud…' : 'Being read aloud…'}
+                  // Nothing spoken yet: VocalStack is starting a voice (a speech machine can take a couple of minutes).
+                  waiting={!s.done ? 'Getting a voice ready… This can take a couple of minutes.' : undefined}
                   since={s.requestedAt}
                   total={t?.sentences.length ?? 0}
                 />
@@ -302,7 +306,7 @@ export const SpeechField: React.FC<Props> = ({ field, path = '' }) => {
 }
 
 /** Work under way: the share of sentences done, counted up as each step is saved, and the time it has taken. */
-const Progress: React.FC<{ done: number; label: string; since?: string; total: number }> = ({ done, label, since, total }) => {
+const Progress: React.FC<{ done: number; label: string; since?: string; total: number; waiting?: string }> = ({ done, label, since, total, waiting }) => {
   const [started] = useState(() => (since ? new Date(since).getTime() : Date.now()))
   const [, tick] = useState(0)
   useEffect(() => {
@@ -315,12 +319,18 @@ const Progress: React.FC<{ done: number; label: string; since?: string; total: n
   const share = total ? done / total : 0
   return (
     <div style={{ display: 'grid', gap: 4 }}>
-      <div aria-valuemax={total} aria-valuemin={0} aria-valuenow={done} className="vs-bar" role="progressbar">
-        <span style={{ width: `${share * 100}%` }} />
-      </div>
+      {waiting ? (
+        <div aria-valuetext={waiting} className="vs-bar vs-bar--wait" role="progressbar">
+          <span />
+        </div>
+      ) : (
+        <div aria-valuemax={total} aria-valuemin={0} aria-valuenow={done} className="vs-bar" role="progressbar">
+          <span style={{ width: `${share * 100}%` }} />
+        </div>
+      )}
       <span className="vs-speech-muted">
         <span className="vs-spin" />
-        {label} {total ? `${done} of ${total} sentences` : ''} · {elapsed}
+        {waiting ?? `${label} ${total ? `${done} of ${total} sentences` : ''}`} · {elapsed}
       </span>
     </div>
   )
