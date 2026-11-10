@@ -4,3 +4,4 @@ export { SpeakerField } from '../components/SpeakerField.js';
 export { SpeechField } from '../components/SpeechField.js';
 export { TranscribeButton } from '../components/TranscribeButton.js';
 export { TranscriptField } from '../components/TranscriptField.js';
+export { UpdateNotice } from '../components/UpdateNotice.js';

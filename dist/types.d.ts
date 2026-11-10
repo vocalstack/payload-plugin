@@ -44,6 +44,12 @@ export type VocalStackPluginOptions = {
      * Authenticate there). Needs the dashboard's /connect flow; until then, paste a key.
      */
     oneClickConnect?: boolean;
+    /**
+     * Check npm for a newer version of this plugin (from the server, at most every
+     * 6 hours) and say so in the admin: in the nav and on Settings → VocalStack.
+     * Default `true`; `false` makes no outbound call and shows nothing.
+     */
+    updateCheck?: boolean;
     /** A Whisper language code (`en`, `ro`, …). Leave out to auto-detect. */
     spokenLanguage?: string;
     /**
@@ -268,6 +274,15 @@ export type StatusResponse = {
     /** The job was stopped before it finished; the field is back to how it was before. */
     stopped?: boolean;
     vocalstack?: VocalStackFieldData;
+};
+export type VersionResponse = {
+    /** This plugin's version, as installed. */
+    current: string;
+    /** The newest version on npm, or `null` when it is not known (offline, or `updateCheck: false`). */
+    latest: null | string;
+    /** Its release notes. */
+    releaseURL?: string;
+    state: 'current' | 'outdated' | 'unknown';
 };
 export type ConnectionResponse = {
     account?: string;

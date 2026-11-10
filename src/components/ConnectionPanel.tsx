@@ -7,8 +7,31 @@ import type { ConnectionResponse } from '../types.js'
 
 import { BrandStyles, Logo } from './Brand.js'
 import { useConnection } from './useConnection.js'
+import { useVersion } from './useVersion.js'
 
 const KEYS_URL = 'https://app.vocalstack.com/developers/keys'
+const muted = { color: 'var(--theme-elevation-500)' }
+
+/** The installed version, and the newer one when there is one. */
+const VersionLine: React.FC = () => {
+  const version = useVersion()
+  if (!version) return null
+  if (version.state !== 'outdated') return <p style={{ ...muted, fontSize: 13, margin: 0 }}>@vocalstack/payload {version.current}</p>
+  return (
+    <div style={{ background: 'var(--theme-warning-100)', borderRadius: 'var(--style-radius-s, 4px)', fontSize: 13, padding: '10px 12px' }}>
+      <strong>@vocalstack/payload {version.latest} is out.</strong> This site runs {version.current}.{' '}
+      {version.releaseURL && (
+        <a href={version.releaseURL} rel="noreferrer" target="_blank">
+          What's new
+        </a>
+      )}
+      <p style={{ margin: '6px 0 0' }}>
+        Update it in the site's code (<code>pnpm up @vocalstack/payload</code>), then run <code>payload generate:importmap</code> and, with Postgres or SQLite,{' '}
+        <code>payload migrate:create</code> before deploying.
+      </p>
+    </div>
+  )
+}
 
 export const ConnectionPanel: React.FC<{ oneClickConnect?: boolean }> = ({ oneClickConnect }) => {
   const { call, connect, connecting, connection, setConnection } = useConnection()
@@ -32,19 +55,15 @@ export const ConnectionPanel: React.FC<{ oneClickConnect?: boolean }> = ({ oneCl
 
   const save = () => void run(() => call('/vocalstack/key', { body: JSON.stringify({ apiKey }), method: 'POST' }), 'Connected to VocalStack.')
 
-  const muted = { color: 'var(--theme-elevation-500)' }
-
   if (!connection) return <p style={muted}>Checking the VocalStack connection…</p>
-
-  if (connection.source === 'options') {
-    return <p style={muted}>Connected with the API key from the plugin config. Change it there.</p>
-  }
 
   return (
     <div className="vs-brand" style={{ display: 'grid', gap: 'var(--base)', marginBottom: 'calc(var(--base) * 2)', maxWidth: 560 }}>
       <BrandStyles />
       <Logo height={24} />
-      {connection.connected ? (
+      {connection.source === 'options' ? (
+        <p style={{ margin: 0 }}>Connected with the API key from the plugin config. Change it there.</p>
+      ) : connection.connected ? (
         <>
           <p style={{ margin: 0 }}>Connected to VocalStack{connection.account ? ` as ${connection.account}` : ''}. Audio uploads now have a Transcribe button.</p>
           <div>
@@ -97,6 +116,7 @@ export const ConnectionPanel: React.FC<{ oneClickConnect?: boolean }> = ({ oneCl
         </>
       )}
       {error && <p style={{ color: 'var(--theme-error-500)', margin: 0 }}>{error}</p>}
+      <VersionLine />
     </div>
   )
 }

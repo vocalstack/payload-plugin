@@ -54,12 +54,26 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
 | `fileURL` | the doc's `url`, made absolute | `({ doc, collection, req }) => string`: the address VocalStack fetches. Point it at your bucket's public URL to skip the Payload file proxy. |
 | `access` | signed-in users who can update the doc | Extra check for transcribing, translating, speakers, voices and the admin lookups, and for changing the connection. |
 | `oneClickConnect` | `false` | Show **Connect VocalStack** (see below). |
+| `updateCheck` | `true` | Say in the admin when a newer version is on npm; see below. `false` makes no outbound call. |
 | `apiURL` / `dashboardURL` | `https://api.vocalstack.com` / `https://app.vocalstack.com` | |
 | `enabled` | `true` | `false` keeps the schema but removes the button and the endpoints. |
 | `speakers` | none | Collections of people saved as VocalStack speakers, each with a cloned voice; see below. (`voices`, its name in 0.5, still works.) |
 | `readings` | `{ slug: 'vocalstack-readings' }` | The upload collection finished readings are kept in, added by the plugin; `overrides: (collection) => collection` adjusts it. `false` streams readings from VocalStack instead. See below for bringing your own. |
 | `listeners` | off | `true`, or `{ languages?, speak?, access?, perHour? }`: let visitors ask for a transcript in their language; see below. |
 | `voiceMode` | the transcript's toggle | `({ collection, doc, req, row }) => 'synthetic' \| 'cloned' \| undefined`: the site decides how transcripts are read aloud, and the toggle is hidden. See below. |
+
+### Updates
+
+The plugin is part of your site's code, so it can't update itself: a new version means changing `package.json`, rebuilding and deploying, and sometimes a migration. It does tell you when one is out. The server asks npm for the newest `@vocalstack/payload` at most every 6 hours (`GET /api/vocalstack/version`, signed-in users), and while a newer one is out the admin nav shows a notice linking to **Settings → VocalStack**, which shows both versions, the release notes and the steps. `VERSION` (from `@vocalstack/payload`) is the installed one.
+
+To have updates proposed for you, let Renovate or Dependabot open a pull request for each release:
+
+```json
+// renovate.json
+{ "extends": ["config:recommended"], "packageRules": [{ "matchPackageNames": ["@vocalstack/payload"], "labels": ["vocalstack"] }] }
+```
+
+After updating, run `payload generate:importmap`, and with Postgres or SQLite `payload migrate:create`.
 
 ### Audio that isn't an upload
 

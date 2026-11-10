@@ -6,6 +6,7 @@ import { connectionEndpoints } from './endpoints/connection.js'
 import { refreshAfterRead, speechEndpoints } from './endpoints/speech.js'
 import { streamEndpoint } from './endpoints/stream.js'
 import { transcribeEndpoints } from './endpoints/transcribe.js'
+import { versionEndpoint } from './endpoints/version.js'
 import { lookupEndpoints, speakerEndpoints } from './endpoints/voices.js'
 import { readingsCollection, readingsSlug } from './readings.js'
 import { settingsGlobal } from './settings.js'
@@ -13,6 +14,7 @@ import { settingsGlobal } from './settings.js'
 export type * from './types.js'
 export { spokenSentences, timedTokens, transcriptText } from './text.js'
 export { migrateSpeakerFields, speakerData } from './endpoints/voices.js'
+export { VERSION } from './version.js'
 
 const isAudioDoc = (data: Record<string, unknown> | undefined) => typeof data?.mimeType === 'string' && data.mimeType.startsWith('audio/')
 
@@ -187,8 +189,19 @@ export const vocalstackPlugin =
       if (!collections.some((c) => c.slug === v.collection)) throw new Error(`vocalstackPlugin: no collection "${v.collection}" for speakers`)
     }
 
+    const updateCheck = enabled && options.updateCheck !== false
+
     return {
       ...config,
+      admin: updateCheck
+        ? {
+            ...config.admin,
+            components: {
+              ...config.admin?.components,
+              afterNavLinks: [...(config.admin?.components?.afterNavLinks ?? []), '@vocalstack/payload/client#UpdateNotice'],
+            },
+          }
+        : config.admin,
       collections: [...collections, ...(readings && !collections.some((c) => c.slug === readings) ? [(options.readings && options.readings.overrides ? options.readings.overrides : (c: CollectionConfig) => c)(readingsCollection(readings))] : [])].map((original) => {
         const speaker = speakers.find((v) => v.collection === original.slug)
         const collection = speaker
@@ -226,7 +239,7 @@ export const vocalstackPlugin =
             : collection.hooks,
         }
       }),
-      endpoints: enabled ? [...(config.endpoints ?? []), ...connectionEndpoints(options), ...lookupEndpoints(options)] : config.endpoints,
+      endpoints: enabled ? [...(config.endpoints ?? []), ...connectionEndpoints(options), ...lookupEndpoints(options), versionEndpoint(options)] : config.endpoints,
       globals: [...(config.globals ?? []), settingsGlobal(options)],
     }
   }
