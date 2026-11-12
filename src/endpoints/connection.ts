@@ -57,11 +57,23 @@ async function lookUpOwner(apiKey: string, apiURL: string): Promise<Owner | unde
 }
 
 /**
+ * The id of the workspace a key belongs to, for the consent screen to start on. A key
+ * never changes workspace, so what was read before is used however old it is; a key not
+ * read yet is asked about with the usual time limit. `undefined` when it cannot be told.
+ */
+async function workspaceIdOf(apiKey: string, apiURL: string): Promise<string | undefined> {
+  const known = owners.get(ownerKey(apiKey, apiURL))?.owner?.workspace?.id
+  if (known) return known
+  return (await lookUpOwner(apiKey, apiURL))?.workspace?.id
+}
+
+/**
  * One-click connect, as OAuth 2.0 authorization code + PKCE (RFC 7636) whose
  * token is a VocalStack API key:
  *
  * 1. POST /api/vocalstack/connect   → state + verifier stored here; the admin opens
  *    {dashboard}/connect?response_type=code&redirect_uri=…&state=…&code_challenge=…
+ *    (and workspace=<id> of the key in use, so the consent screen starts on it)
  * 2. The person clicks Authenticate on the dashboard, which redirects to
  *    /api/vocalstack/callback?code=…&state=…
  * 3. The callback redeems the code server-to-server at {api}/v1/connect/token with
@@ -142,7 +154,7 @@ export function connectionEndpoints(options: VocalStackPluginOptions): Endpoint[
 
         const site = new URL(req.payload.config.serverURL || req.origin)
         const url = new URL('/connect', dashboardURL)
-        url.search = new URLSearchParams({
+        const query = new URLSearchParams({
           client_name: `${site.host} (Payload CMS)`,
           code_challenge: challenge,
           code_challenge_method: 'S256',
@@ -150,7 +162,14 @@ export function connectionEndpoints(options: VocalStackPluginOptions): Endpoint[
           response_type: 'code',
           scope: 'read write',
           state,
-        }).toString()
+        })
+        // Already connected: the consent screen starts on the workspace in use. Left out when it cannot be told.
+        const workspace = await (async () => {
+          const apiKey = options.apiKey ?? (await readSettings(req)).apiKey
+          return apiKey ? await workspaceIdOf(apiKey, apiURL) : undefined
+        })().catch(() => undefined)
+        if (workspace) query.set('workspace', workspace)
+        url.search = query.toString()
         return json({ url: url.toString() })
       },
     },

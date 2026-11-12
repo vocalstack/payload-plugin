@@ -188,7 +188,7 @@ Transcripts stay in the workspace that made them. After a change, the transcript
 
 ## One-click connect (protocol)
 
-The alternative to pasting a key: **Connect VocalStack** opens the dashboard in a new tab, the person chooses a workspace and clicks **Authenticate**, and the tab closes. **Change** runs the same flow while connected; the stored key is replaced only once the new one has been issued. This is OAuth 2.0 authorization code + PKCE (RFC 7636) with an API key as the access token. There is no client registration: the consent screen shows the `redirect_uri` host instead.
+The alternative to pasting a key: **Connect VocalStack** opens the dashboard in a new tab, the person chooses a workspace and clicks **Authenticate**, and the tab closes. **Change** runs the same flow while connected; the stored key is replaced only once the new one has been issued. While connected, the link also carries `workspace=<id>` (the workspace of the key in use), so the consent screen starts on that workspace; it is left out when the workspace cannot be told. This is OAuth 2.0 authorization code + PKCE (RFC 7636) with an API key as the access token. There is no client registration: the consent screen shows the `redirect_uri` host instead.
 
 ```
 CMS admin                           CMS server                         app.vocalstack.com / api.vocalstack.com

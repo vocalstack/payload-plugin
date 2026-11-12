@@ -8,6 +8,7 @@ export declare const forgetOwners: () => void;
  *
  * 1. POST /api/vocalstack/connect   → state + verifier stored here; the admin opens
  *    {dashboard}/connect?response_type=code&redirect_uri=…&state=…&code_challenge=…
+ *    (and workspace=<id> of the key in use, so the consent screen starts on it)
  * 2. The person clicks Authenticate on the dashboard, which redirects to
  *    /api/vocalstack/callback?code=…&state=…
  * 3. The callback redeems the code server-to-server at {api}/v1/connect/token with

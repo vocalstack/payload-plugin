@@ -63,8 +63,66 @@ const run = async (options, method, path, over) => {
 
 const startConnect = async () => {
   const { body } = await run({}, 'post', '/vocalstack/connect')
+  // Starting a connect may ask /v1/me which workspace the key in use is in; the tests below count what follows.
+  calls.length = 0
   return new URL(body.url).searchParams.get('state')
 }
+
+const connectLink = async (options = {}) => new URL((await run(options, 'post', '/vocalstack/connect')).body.url)
+
+test('connecting again opens the consent screen on the workspace in use', async () => {
+  store = { account: 'Acme studio', apiKey: 'vs_key_a' }
+  answers['/v1/me'] = () => reply({ workspace: ACME })
+  const url = await connectLink()
+  assert.equal(url.origin + url.pathname, 'https://app.vocalstack.com/connect')
+  assert.equal(url.searchParams.get('workspace'), 'w-acme')
+  assert.equal(url.searchParams.get('response_type'), 'code')
+  assert.ok(url.searchParams.get('state'))
+  assert.deepEqual(calls.map((c) => [c.path, c.auth]), [['/v1/me', 'Bearer vs_key_a']])
+  // The workspace of a key is read once: later links need no answer from VocalStack.
+  answers['/v1/me'] = () => reply({ code: 'internal', message: 'down' }, 503)
+  assert.equal((await connectLink()).searchParams.get('workspace'), 'w-acme')
+  assert.equal(calls.length, 1)
+})
+
+test('a workspace already shown in Settings is sent without asking VocalStack again', async () => {
+  answers['/v1/me'] = () => reply({ workspace: PERSONAL })
+  await run({}, 'post', '/vocalstack/key', { body: { apiKey: 'vs_key_pasted' } })
+  assert.equal((await connectLink()).searchParams.get('workspace'), 'w-me')
+  assert.equal(calls.length, 1)
+})
+
+test('a key from the plugin config sends its workspace too', async () => {
+  answers['/v1/me'] = () => reply({ workspace: ACME })
+  assert.equal((await connectLink({ apiKey: 'vs_key_config' })).searchParams.get('workspace'), 'w-acme')
+  assert.equal(calls[0].auth, 'Bearer vs_key_config')
+})
+
+test('not connected: the connect link names no workspace and VocalStack is not asked', async () => {
+  const url = await connectLink()
+  assert.equal(url.searchParams.has('workspace'), false)
+  assert.ok(url.searchParams.get('state'))
+  assert.equal(calls.length, 0)
+})
+
+test('a workspace that cannot be told is left out, and the connect still starts', async () => {
+  store = { account: 'ada@example.com', apiKey: 'vs_key_old' }
+  answers['/v1/me'] = () => reply({ user: { email: 'ada@example.com' } })
+  assert.equal((await connectLink()).searchParams.has('workspace'), false)
+  forgetOwners()
+  answers['/v1/me'] = () => reply({ code: 'internal', message: 'down' }, 503)
+  const down = await run({}, 'post', '/vocalstack/connect')
+  assert.equal(down.status, 200)
+  assert.equal(new URL(down.body.url).searchParams.has('workspace'), false)
+  forgetOwners()
+  answers['/v1/me'] = () => {
+    throw new Error('network')
+  }
+  const failed = await run({}, 'post', '/vocalstack/connect')
+  assert.equal(failed.status, 200)
+  assert.equal(new URL(failed.body.url).searchParams.has('workspace'), false)
+  assert.ok(store.connectState)
+})
 
 test('a key from the plugin config shows its workspace, with the icon link made absolute', async () => {
   answers['/v1/me'] = () => reply({ principal: { name: 'ignored' }, workspace: ACME })
