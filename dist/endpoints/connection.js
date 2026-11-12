@@ -1,9 +1,47 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { accountLabel, DEFAULT_API_URL, DEFAULT_DASHBOARD_URL, VocalStackAPI, VocalStackAPIError } from '../api.js';
 import { readSettings, writeSettings } from '../settings.js';
+import { workspaceOf } from '../workspace.js';
 const json = (body, status = 200) => Response.json(body, { status });
 const base64url = (b) => b.toString('base64url');
 const CONNECT_TTL_MS = 10 * 60 * 1000;
+const OWNER_FRESH_MS = 60_000;
+const OWNER_RETRY_MS = 15_000;
+const OWNER_TIMEOUT_MS = 6_000;
+const owners = new Map();
+const ownerKey = (apiKey, apiURL) => createHash('sha256').update(`${apiURL}\n${apiKey}`).digest('hex');
+/** Forget what was read from `/v1/me` (tests). */
+export const forgetOwners = () => owners.clear();
+const ownerOf = (me, apiURL) => {
+    const workspace = workspaceOf(me.workspace, apiURL);
+    return { account: workspace?.name ?? accountLabel(me), workspace };
+};
+function remember(apiKey, apiURL, owner, ms = OWNER_FRESH_MS) {
+    if (owners.size > 50)
+        owners.clear();
+    owners.set(ownerKey(apiKey, apiURL), { owner, until: Date.now() + ms });
+}
+/**
+ * The key's workspace as `/v1/me` has it now, so a new name or icon set in the VocalStack
+ * Dashboard reaches the admin. Asked at most once a minute per key; `undefined` when
+ * VocalStack did not answer in time.
+ */
+async function lookUpOwner(apiKey, apiURL) {
+    const hit = owners.get(ownerKey(apiKey, apiURL));
+    if (hit && Date.now() < hit.until)
+        return hit.owner;
+    const owner = await Promise.race([
+        new VocalStackAPI(apiKey, apiURL).me().then((me) => ownerOf(me, apiURL), () => undefined),
+        new Promise((resolve) => {
+            const timer = setTimeout(resolve, OWNER_TIMEOUT_MS);
+            timer.unref?.();
+        }),
+    ]);
+    // Through a blip the last good answer stays, and VocalStack is asked again sooner.
+    const last = owner ?? hit?.owner;
+    remember(apiKey, apiURL, last, owner ? OWNER_FRESH_MS : OWNER_RETRY_MS);
+    return last;
+}
 /**
  * One-click connect, as OAuth 2.0 authorization code + PKCE (RFC 7636) whose
  * token is a VocalStack API key:
@@ -27,10 +65,18 @@ export function connectionEndpoints(options) {
             handler: async (req) => {
                 if (!req.user)
                     return json({ error: 'Sign in first.' }, 401);
-                if (options.apiKey)
-                    return json({ connected: true, source: 'options' });
+                if (options.apiKey) {
+                    const owner = await lookUpOwner(options.apiKey, apiURL);
+                    return json({ account: owner?.account, connected: true, source: 'options', workspace: owner?.workspace });
+                }
                 const settings = await readSettings(req);
-                return json({ account: settings.account ?? undefined, connected: Boolean(settings.apiKey), source: settings.apiKey ? 'admin' : undefined });
+                if (!settings.apiKey)
+                    return json({ account: settings.account ?? undefined, connected: false });
+                const owner = await lookUpOwner(settings.apiKey, apiURL);
+                // The stored label follows a rename, so it is still right when VocalStack cannot be asked.
+                if (owner?.account && owner.account !== settings.account)
+                    await writeSettings(req, { account: owner.account }).catch(() => undefined);
+                return json({ account: owner?.account ?? settings.account ?? undefined, connected: true, source: 'admin', workspace: owner?.workspace });
             },
         },
         {
@@ -45,9 +91,10 @@ export function connectionEndpoints(options) {
                 if (!apiKey?.startsWith('vs_key_'))
                     return json({ error: 'A VocalStack API key starts with vs_key_.' }, 400);
                 try {
-                    const account = accountLabel(await new VocalStackAPI(apiKey, apiURL).me()) ?? null;
-                    await writeSettings(req, { account, apiKey });
-                    return json({ account: account ?? undefined, connected: true, source: 'admin' });
+                    const owner = ownerOf(await new VocalStackAPI(apiKey, apiURL).me(), apiURL);
+                    await writeSettings(req, { account: owner.account ?? null, apiKey });
+                    remember(apiKey, apiURL, owner);
+                    return json({ account: owner.account, connected: true, source: 'admin', workspace: owner.workspace });
                 }
                 catch (err) {
                     const message = err instanceof VocalStackAPIError && err.status === 401 ? 'VocalStack refused that key.' : String(err.message);
@@ -63,6 +110,17 @@ export function connectionEndpoints(options) {
                     return json({ error: 'You may not change the VocalStack connection.' }, 403);
                 await writeSettings(req, { account: null, apiKey: null });
                 return json({ connected: Boolean(options.apiKey), source: options.apiKey ? 'options' : undefined });
+            },
+        },
+        {
+            // Give up a connect that was started: its link stops working, and the key in use stays.
+            method: 'delete',
+            path: '/vocalstack/connect',
+            handler: async (req) => {
+                if (!(await canManage(req)))
+                    return json({ error: 'You may not change the VocalStack connection.' }, 403);
+                await writeSettings(req, { connectExpiresAt: null, connectState: null, connectVerifier: null });
+                return json({ ok: true });
             },
         },
         {
@@ -112,10 +170,21 @@ export function connectionEndpoints(options) {
                     method: 'POST',
                 });
                 const token = (await res.json().catch(() => ({})));
+                // Nothing was stored yet: a refused or cancelled connect leaves the key in use as it was.
                 if (!res.ok || !token.access_token)
                     return page(`VocalStack did not issue a key: ${token.error_description ?? res.status}`, false);
-                const account = token.account?.name ?? accountLabel(await new VocalStackAPI(token.access_token, apiURL).me().catch(() => ({}))) ?? null;
-                await writeSettings(req, { account, apiKey: token.access_token });
+                let workspace = workspaceOf(token.workspace, apiURL);
+                let account = workspace?.name ?? token.account?.name;
+                if (!workspace) {
+                    // An API from before workspaces were named on this answer: ask /v1/me.
+                    const owner = ownerOf(await new VocalStackAPI(token.access_token, apiURL).me().catch(() => ({})), apiURL);
+                    workspace = owner.workspace;
+                    account = workspace?.name ?? account ?? owner.account;
+                }
+                await writeSettings(req, { account: account ?? null, apiKey: token.access_token });
+                remember(token.access_token, apiURL, { account, workspace });
+                if (workspace)
+                    return page(`Connected to the VocalStack workspace ${workspace.name}.`, true);
                 return page(account ? `Connected to VocalStack as ${account}.` : 'Connected to VocalStack.', true);
             },
         },

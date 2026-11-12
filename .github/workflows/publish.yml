@@ -50,11 +50,11 @@ jobs:
           else
             echo "publish=true" >> "$GITHUB_OUTPUT"
           fi
-      - name: install + build
+      - name: install + build + test
         if: steps.v.outputs.publish == 'true'
         run: |
           pnpm install --frozen-lockfile
-          pnpm build
+          pnpm test
       - name: npm publish
         if: steps.v.outputs.publish == 'true'
         run: |

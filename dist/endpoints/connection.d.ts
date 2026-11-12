@@ -1,5 +1,7 @@
 import type { Endpoint } from 'payload';
 import type { VocalStackPluginOptions } from '../types.js';
+/** Forget what was read from `/v1/me` (tests). */
+export declare const forgetOwners: () => void;
 /**
  * One-click connect, as OAuth 2.0 authorization code + PKCE (RFC 7636) whose
  * token is a VocalStack API key:

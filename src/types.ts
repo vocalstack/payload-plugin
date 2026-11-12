@@ -1,5 +1,9 @@
 import type { CollectionConfig, CollectionSlug, PayloadRequest, TypeWithID } from 'payload'
 
+import type { Workspace } from './workspace.js'
+
+export type { Workspace } from './workspace.js'
+
 export type VocalStackPluginOptions = {
   /**
    * Where finished spoken readings are kept: the plugin downloads each one's MP3
@@ -269,10 +273,13 @@ export type VersionResponse = {
 }
 
 export type ConnectionResponse = {
+  /** A label for what the key belongs to: the workspace's name when VocalStack says which workspace it is. */
   account?: string
   connected: boolean
   /** `options`: the key is in the plugin config; `admin`: connected from the admin panel. */
   source?: 'admin' | 'options'
+  /** The VocalStack workspace the key works in. Missing when VocalStack did not say (an older API, or unreachable just now). */
+  workspace?: Workspace
 }
 
 /** Where one language of a transcript stands, for a listener: what the listen endpoint answers. */

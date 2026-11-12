@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { DEFAULT_API_URL, VocalStackAPI, VocalStackAPIError } from '../api.js';
+import { DEFAULT_API_URL, NOT_IN_WORKSPACE, VocalStackAPI, VocalStackAPIError } from '../api.js';
 import { fetchFile, isPublicURL, resolveFileURL } from '../fileSource.js';
 import { attachWords, transcriptText } from '../text.js';
 import { resolveAPIKey } from '../settings.js';
@@ -118,7 +118,17 @@ export function apiError(err) {
  * whole transcript when done, the reason when it failed.
  */
 export async function checkJob(api, target, recordingId) {
-    const job = await api.job(recordingId);
+    let job;
+    try {
+        job = await api.job(recordingId);
+    }
+    catch (err) {
+        if (!(err instanceof VocalStackAPIError && err.message === NOT_IN_WORKSPACE))
+            throw err;
+        // The job is not this key's to see (the workspace was changed while it ran, or it was deleted):
+        // it would otherwise stay "processing" for ever. An earlier transcript stays; the file can be transcribed again.
+        return { error: NOT_IN_WORKSPACE, status: 'failed', vocalstack: await target.save({ error: NOT_IN_WORKSPACE, status: 'failed' }) };
+    }
     if (job.state === 'stopped' || (job.state === 'failed' && job.errorCode === 'stopped'))
         return restore(target);
     if (job.state === 'failed' || job.state === 'cropping') {

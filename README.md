@@ -41,7 +41,7 @@ Then run `payload generate:importmap`. The plugin adds fields to the targeted co
   - `POST …/vocalstack/voices { voices: 'synthetic' | 'cloned' }`, `POST …/vocalstack/request { langs, speak? }` (translate, and read aloud unless `speak: false`; carried on by the server), `POST …/vocalstack/translate { langs }` (one step; answers `more: true` when it stopped for time), `DELETE …/vocalstack/translate?lang=`, `POST …/vocalstack/speak { langs }`, `GET …/vocalstack/speak`, and the public `GET …/vocalstack/audio?lang=`, which redirects to the reading's MP3 (or, with no `lang` or the spoken one, the recording's audio) for anyone who may read the document.
 - **Languages for listeners** (opt in with `listeners`): visitors pick any language VocalStack offers, and it is made for them and kept for everyone after. `GET /api/vocalstack/languages` is public, `POST …/vocalstack/listen { lang }` asks for a language and `GET …/vocalstack/listen?lang=` says where it stands; see below.
 - **Speakers** (opt in with `speakers`): documents of a collection of people get a sidebar panel that saves that person as a VocalStack speaker and clones their voice, from a minute of a recording they speak in or from an uploaded sample, with their permission. Kept in a hidden `vocalstackSpeaker` group (`speakerId`, `cloneId`, `state` of the voice: `none`/`training`/`ready`/`failed`, `progress`, `error`, `sampleS`, `consentAt`, `createdAt`), with `GET`/`POST`/`DELETE /api/{collection}/:id/vocalstack/speaker`, `…/speaker/sources` and `…/speaker/preview`.
-- **Settings → VocalStack** (a global), where an editor connects an account. The key is stored server-side and is unreadable over the REST and GraphQL APIs.
+- **Settings → VocalStack** (a global), where an editor connects a VocalStack workspace. It shows the workspace the site works in, with its name and icon, and **Change** picks another. The key is stored server-side and is unreadable over the REST and GraphQL APIs.
 
 ## Options
 
@@ -176,11 +176,19 @@ The translation is saved on the document, and where VocalStack can read the lang
 
 When VocalStack does not answer (an outage, an upgrade), the endpoints say *VocalStack is unavailable, try again shortly.* instead of waiting.
 
-**How the audio reaches VocalStack.** If the file has a public address, VocalStack fetches it (`POST /v1/transcriptions { url }`). Otherwise (localhost, a private network) the plugin uploads the bytes. Either way the job runs on VocalStack, and the admin polls every 3 s. The account is billed per second, with a 5-minute minimum per transcription.
+**How the audio reaches VocalStack.** If the file has a public address, VocalStack fetches it (`POST /v1/transcriptions { url }`). Otherwise (localhost, a private network) the plugin uploads the bytes. Either way the job runs on VocalStack, and the admin polls every 3 s. The connected workspace is billed per second, with a 5-minute minimum per transcription.
+
+## The workspace
+
+A VocalStack API key belongs to one workspace: what the site transcribes is kept in that workspace and uses its credit. **Settings → VocalStack** shows it under **Workspace**, with its name and its mark as the VocalStack Dashboard draws it (its own icon; a person for the personal workspace; otherwise its initials on its colour). The name and icon are read from `GET /v1/me` whenever the connection is checked (at most once a minute), so a rename or a new icon in VocalStack shows up here, and a pasted key or a key from the plugin config shows its workspace too. `GET /api/vocalstack/connection` answers `{ connected, source, account, workspace: { id, name, personal, iconUrl } }`, with `iconUrl` an absolute link the browser can load as it is.
+
+A key never moves to another workspace. With `oneClickConnect`, **Change** next to the workspace runs the connect flow again: pick another workspace on VocalStack's consent screen and click Authenticate, and the site swaps to the new key. Cancelling, in VocalStack or with **Cancel** in the admin, leaves the connection as it was. Connecting again makes a new key; the old one keeps working until it is revoked in VocalStack under **Developers → API keys**. Without `oneClickConnect`, disconnect and paste a key made in the other workspace. A key from the plugin config is changed there.
+
+Transcripts stay in the workspace that made them. After a change, the transcripts, translations and readings already saved on your documents are still there and still served, but asking VocalStack for more of one made in the old workspace (another language, a reading, a speaker's sample) answers *This transcript is not in the connected VocalStack workspace…*; transcribe the file again to work with it in the new workspace. A transcription that was still running when the workspace changed ends as failed with the same sentence.
 
 ## One-click connect (protocol)
 
-The alternative to pasting a key: **Connect VocalStack** opens the dashboard in a new tab, the person clicks **Authenticate**, and the tab closes. This is OAuth 2.0 authorization code + PKCE (RFC 7636) with an API key as the access token. There is no client registration: the consent screen shows the `redirect_uri` host instead.
+The alternative to pasting a key: **Connect VocalStack** opens the dashboard in a new tab, the person chooses a workspace and clicks **Authenticate**, and the tab closes. **Change** runs the same flow while connected; the stored key is replaced only once the new one has been issued. This is OAuth 2.0 authorization code + PKCE (RFC 7636) with an API key as the access token. There is no client registration: the consent screen shows the `redirect_uri` host instead.
 
 ```
 CMS admin                           CMS server                         app.vocalstack.com / api.vocalstack.com
@@ -189,20 +197,21 @@ click Connect ── POST /api/vocalstack/connect ─▶ state, verifier (10 min
 ◀──────────── { url } ──────────────
 new tab ─▶ GET app/connect?response_type=code&client_name=…&redirect_uri=…&state=…
                                     &code_challenge=…&code_challenge_method=S256&scope=read write
-           (sign in if needed; pick the organization; "example.com wants to transcribe with VocalStack")
+           (sign in if needed; pick the workspace; "example.com wants to transcribe with VocalStack")
            click Authenticate ─▶ API stores a single-use grant (code hash, challenge, redirect, scopes, principal; 2 min)
            ◀── 302 redirect_uri?code=…&state=…
 tab ─────── GET /api/vocalstack/callback ─▶ check state (+ admin session)
                                     POST api/v1/connect/token (form) ─▶ grant_type=authorization_code, code,
                                                                         code_verifier, redirect_uri
                                                                         verify, burn the code, create the key
-                                    ◀── { access_token: "vs_key_…", token_type: "api_key", key_id, account: { name } }
+                                    ◀── { access_token: "vs_key_…", token_type: "api_key", key_id, account: { name },
+                                          workspace: { id, name, personal, iconUrl } }
                                     stores the key (never sent to a browser)
 tab: "Connected", BroadcastChannel('vocalstack') ─▶ admin refreshes; tab closes
 ```
 
-Cancel redirects with `?error=access_denied&state=…`. The key appears in the dashboard's API keys list as `example.com (Payload CMS)`, where it can be revoked.
+Cancel redirects with `?error=access_denied&state=…`; `DELETE /api/vocalstack/connect` drops a pending connect from the admin side. The key appears in the dashboard's API keys list as `example.com (Payload CMS)`, where it can be revoked.
 
 ## Releasing
 
-Bump `version` in `package.json` and push to `main`. The `publish` workflow publishes that version to npm (trusted publishing, with provenance), tags `v<version>` and creates the GitHub release. A version npm already has is skipped. A prerelease (`0.5.0-beta.1`) goes to the `next` dist-tag. Nobody publishes from a laptop.
+Bump `version` in `package.json` and push to `main`. The `publish` workflow runs the tests (`pnpm test`: a build, then `node --test` over `test/`), publishes that version to npm (trusted publishing, with provenance), tags `v<version>` and creates the GitHub release. A version npm already has is skipped. A prerelease (`0.5.0-beta.1`) goes to the `next` dist-tag. Nobody publishes from a laptop.

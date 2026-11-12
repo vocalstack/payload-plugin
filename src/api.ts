@@ -112,6 +112,12 @@ export type Languages = {
 
 export const UNAVAILABLE = 'VocalStack is unavailable, try again shortly.'
 
+/** A stored recording the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
+export const NOT_IN_WORKSPACE =
+  'This transcript is not in the connected VocalStack workspace: it was made in another workspace, or deleted in VocalStack. Transcribe the file again to work with it here.'
+
+const isGone = (status: number | undefined, message: string) => status === 404 && /^no such (recording|transcription|job)\b/i.test(message.trim())
+
 export class VocalStackAPIError extends Error {
   code: string
   status: number
@@ -137,6 +143,7 @@ function toAPIError(err: unknown): VocalStackAPIError {
   if (err instanceof VocalStackError) {
     const down = err.code === 'unavailable' || (err.code === 'internal' && (err.status === 502 || err.status === 503 || err.status === 504))
     if (down) return new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
+    if (isGone(err.status, err.message)) return new VocalStackAPIError(404, 'not_found', NOT_IN_WORKSPACE)
     return new VocalStackAPIError(err.status ?? 500, err.code, err.message)
   }
   if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) return new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
@@ -193,8 +200,14 @@ export class VocalStackAPI {
     )
   }
 
-  job(recordingId: string) {
-    return call(() => this.sdk.jobs.get(recordingId) as unknown as Promise<Job>)
+  async job(recordingId: string) {
+    try {
+      return await call(() => this.sdk.jobs.get(recordingId) as unknown as Promise<Job>)
+    } catch (err) {
+      // Any "not found" for a job that was started here means this key cannot see it (a wrong address says "no route").
+      if (err instanceof VocalStackAPIError && err.status === 404 && !/^no route\b/i.test(err.message)) throw new VocalStackAPIError(404, 'not_found', NOT_IN_WORKSPACE)
+      throw err
+    }
   }
 
   /** Stop a job before it is done. Its job fails with `stopped`; what was transcribed so far stays in VocalStack. */
@@ -252,6 +265,7 @@ export class VocalStackAPI {
     const body = (await res.json().catch(() => null)) as null | { code?: string; data?: { details?: unknown }; message?: string }
     if (res.ok) return body as unknown as VoiceTrack[]
     if (res.status === 502 || res.status === 503 || res.status === 504) throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
+    if (isGone(res.status, body?.message ?? '')) throw new VocalStackAPIError(404, 'not_found', NOT_IN_WORKSPACE)
     throw new VocalStackAPIError(res.status, body?.code ?? 'http_error', body?.message ?? `VocalStack answered ${res.status}`)
   }
 

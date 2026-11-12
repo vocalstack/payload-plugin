@@ -107,6 +107,8 @@ export type Languages = {
     voice: string[];
 };
 export declare const UNAVAILABLE = "VocalStack is unavailable, try again shortly.";
+/** A stored recording the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
+export declare const NOT_IN_WORKSPACE = "This transcript is not in the connected VocalStack workspace: it was made in another workspace, or deleted in VocalStack. Transcribe the file again to work with it here.";
 export declare class VocalStackAPIError extends Error {
     code: string;
     status: number;

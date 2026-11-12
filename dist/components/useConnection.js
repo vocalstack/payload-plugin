@@ -55,5 +55,11 @@ export function useConnection() {
             throw err;
         }
     }, [call]);
-    return { call, connect, connecting, connection, refresh, setConnection };
+    /** Give up a connect that is waiting: its link stops working, and the connection in use stays. */
+    const cancel = useCallback(async () => {
+        setConnecting(false);
+        await call('/vocalstack/connect', { method: 'DELETE' }).catch(() => undefined);
+        await refresh();
+    }, [call, refresh]);
+    return { call, cancel, connect, connecting, connection, refresh, setConnection };
 }
