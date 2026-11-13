@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@vocalstack/js-sdk':
-        specifier: 2.0.0-alpha.1
-        version: 2.0.0-alpha.1
+        specifier: 2.0.0-alpha.15
+        version: 2.0.0-alpha.15
     devDependencies:
       '@payloadcms/ui':
         specifier: 3.80.0
@@ -619,11 +619,11 @@ packages:
   '@types/trusted-types@2.0.7':
     resolution: {integrity: sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==}
 
-  '@vocalstack/contract@1.0.0-alpha.1':
-    resolution: {integrity: sha512-ZcCjga5LL8Kjh7KtuH9V7W0qC+TqIL5gpKCl2JCcnX+bD1zCd4DoWyPcFtnlcqLrp63cc/a/RsHnbg/2eZLkEg==}
+  '@vocalstack/contract@1.0.0-alpha.13':
+    resolution: {integrity: sha512-SUbr5BeTYaieh3gp3u5tvcoCIbZ2CMo54734ZnCyl2JChXRi99jYcts2NrzipBZPw0zqOlC+lzyjaLBlA/lCtA==}
 
-  '@vocalstack/js-sdk@2.0.0-alpha.1':
-    resolution: {integrity: sha512-D9yV7hV4xwBusf0wioTKpzlJXtCfNA0r9LgYZ4oegi9OCP6BtQKG5Ns9oN2pUS3LbkDPRGnzIeNR8aOa5LGjoA==}
+  '@vocalstack/js-sdk@2.0.0-alpha.15':
+    resolution: {integrity: sha512-SxasYWBEIVROxlBVTL3GCqP1+RmejbvXBDUb1AnfVUBhwuz3VMAH+OghP9tqWVD3f63+mR7n/gNEsWMx81NpTA==}
     engines: {node: '>=20'}
 
   ajv@8.17.1:
@@ -1774,13 +1774,13 @@ snapshots:
   '@types/trusted-types@2.0.7':
     optional: true
 
-  '@vocalstack/contract@1.0.0-alpha.1':
+  '@vocalstack/contract@1.0.0-alpha.13':
     dependencies:
       zod: 4.6.7
 
-  '@vocalstack/js-sdk@2.0.0-alpha.1':
+  '@vocalstack/js-sdk@2.0.0-alpha.15':
     dependencies:
-      '@vocalstack/contract': 1.0.0-alpha.1
+      '@vocalstack/contract': 1.0.0-alpha.13
       ws: 8.22.0
     transitivePeerDependencies:
       - bufferutil
