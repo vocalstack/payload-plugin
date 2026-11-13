@@ -67,17 +67,17 @@ export const legacyVoiceData = ({ cloneId, speakerId, ...rest }) => ({ ...rest, 
 /**
  * A person saved as a VocalStack speaker, with their cloned voice, kept in the `vocalstackSpeaker` group of their document:
  *   GET    /:id/vocalstack/speaker            where its voice's training stands
- *   POST   /:id/vocalstack/speaker            save and clone them: JSON { recordingId, startS, endS, consent },
+ *   POST   /:id/vocalstack/speaker            save and clone them: JSON { transcriptionId, startS, endS, consent },
  *                                             or multipart with a `file` sample and `_payload` { consent }
  *   DELETE /:id/vocalstack/speaker            delete it, and its voice, in VocalStack too
- *   GET    /:id/vocalstack/speaker/sources    recordings to take the sample from
- *   GET    /:id/vocalstack/speaker/clip       a stretch of one of them, to hear before cloning (?recording=&startS=&endS=)
+ *   GET    /:id/vocalstack/speaker/sources    transcriptions to take the sample from
+ *   GET    /:id/vocalstack/speaker/clip       a stretch of one of them, to hear before cloning (?transcription=&startS=&endS=)
  *   GET    /:id/vocalstack/speaker/preview    the voice speaking (?lang=&format=ogg|caf)
- *   POST   /:id/vocalstack/speaker/trial      a trial from picked sentences { recordingId, speaker, spans, replace? }
+ *   POST   /:id/vocalstack/speaker/trial      a trial from picked sentences { transcriptionId, speaker, spans, replace? }
  *   GET    /:id/vocalstack/speaker/trial      ?voice= where it stands; …/trial/preview?voice=&lang=&format= hear it
  *   POST   /:id/vocalstack/speaker/trial/keep { voice, name, consent } keep it as their speaker; DELETE …/trial?voice= drop it
  * Each also answers under /:id/vocalstack/voice…, its path in 0.5.
- * A sample is only ever taken from the recordings `config.recordings` offers for that document.
+ * A sample is only ever taken from the transcriptions `config.transcriptions` offers for that document.
  */
 export function speakerEndpoints(config, options) {
     const { collection } = config;
@@ -96,8 +96,10 @@ export function speakerEndpoints(config, options) {
             return json({ error: 'Not found.' }, 404);
         return { api: new VocalStackAPI(apiKey, apiURL), doc, id };
     };
-    /** The recording, when the host offers it for this person (`config.recordings`). */
-    const ownRecording = async (req, doc, recordingId) => ((await config.recordings?.({ doc, req })) ?? []).find((s) => s.recordingId === recordingId);
+    /** The transcriptions the host offers for this person. A source with only a recording id (before 0.9.0) cannot be read any more and is left out. */
+    const sourcesOf = async (req, doc) => ((await (config.transcriptions ?? config.recordings)?.({ doc, req })) ?? []).filter((s) => typeof s?.transcriptionId === 'string' && s.transcriptionId !== '');
+    /** The transcription, when the host offers it for this person. */
+    const ownSource = async (req, doc, transcriptionId) => (await sourcesOf(req, doc)).find((s) => s.transcriptionId === transcriptionId);
     const save = async (req, id, data) => {
         await req.payload.update({ id, collection, data: { vocalstackSpeaker: data, vocalstackVoice: legacyVoiceData(data) }, depth: 0, overrideAccess: true, req });
         return data;
@@ -158,14 +160,14 @@ export function speakerEndpoints(config, options) {
                         const body = (await req.json?.().catch(() => ({})));
                         consent = body.consent === true;
                         const [startS, endS] = [Number(body.startS), Number(body.endS)];
-                        if (typeof body.recordingId !== 'string' || !(endS - startS >= MIN_SAMPLE_S - 1.5 && endS - startS <= MAX_SAMPLE_S)) {
-                            return json({ error: `Pick ${MIN_SAMPLE_S} to ${MAX_SAMPLE_S} seconds of a recording.` }, 400);
+                        if (typeof body.transcriptionId !== 'string' || !(endS - startS >= MIN_SAMPLE_S - 1.5 && endS - startS <= MAX_SAMPLE_S)) {
+                            return json({ error: `Pick ${MIN_SAMPLE_S} to ${MAX_SAMPLE_S} seconds of a transcription.` }, 400);
                         }
                         if (!consent)
                             return json({ error: 'Confirm you have their permission to clone their voice.' }, 400);
-                        if (!(await ownRecording(req, doc, body.recordingId)))
-                            return json({ error: 'That recording is not one of theirs.' }, 403);
-                        const clip = await api.clip(body.recordingId, startS, endS);
+                        if (!(await ownSource(req, doc, body.transcriptionId)))
+                            return json({ error: 'That transcription is not one of theirs.' }, 403);
+                        const clip = await api.clip(body.transcriptionId, startS, endS);
                         sample = { blob: await clip.blob(), name: 'sample.wav' };
                     }
                     if (!consent)
@@ -210,11 +212,11 @@ export function speakerEndpoints(config, options) {
                 const found = await open(req, 'create');
                 if (found instanceof Response)
                     return found;
-                const sources = (await config.recordings?.({ doc: found.doc, req })) ?? [];
+                const sources = await sourcesOf(req, found.doc);
                 return json({
-                    sources: sources.map(({ label, recordingId, sentences }) => ({
+                    sources: sources.map(({ label, sentences, transcriptionId }) => ({
                         label,
-                        recordingId,
+                        transcriptionId,
                         sentences: (sentences ?? []).filter((s) => !s.draft).map(({ end, id, speaker, start, text }) => ({ end, id, speaker, start, text })),
                     })),
                 });
@@ -227,14 +229,14 @@ export function speakerEndpoints(config, options) {
                 const found = await open(req, 'create');
                 if (found instanceof Response)
                     return found;
-                const recording = req.searchParams.get('recording');
+                const transcription = req.searchParams.get('transcription');
                 const [startS, endS] = [Number(req.searchParams.get('startS')), Number(req.searchParams.get('endS'))];
-                if (!recording || !(endS > startS) || endS - startS > MAX_SAMPLE_S)
+                if (!transcription || !(endS > startS) || endS - startS > MAX_SAMPLE_S)
                     return json({ error: `At most ${MAX_SAMPLE_S} seconds.` }, 400);
-                if (!(await ownRecording(req, found.doc, recording)))
-                    return json({ error: 'That recording is not one of theirs.' }, 403);
+                if (!(await ownSource(req, found.doc, transcription)))
+                    return json({ error: 'That transcription is not one of theirs.' }, 403);
                 try {
-                    const res = await found.api.clip(recording, startS, endS);
+                    const res = await found.api.clip(transcription, startS, endS);
                     return new Response(res.body, { headers: { 'cache-control': 'private, max-age=3600', 'content-type': 'audio/wav' } });
                 }
                 catch (err) {
@@ -243,7 +245,7 @@ export function speakerEndpoints(config, options) {
             },
         },
         {
-            // A trial voice from sentences of one of their recordings, to hear before keeping it.
+            // A trial voice from sentences of one of their transcriptions, to hear before keeping it.
             method: 'post',
             path: '/:id/vocalstack/speaker/trial',
             handler: async (req) => {
@@ -256,16 +258,14 @@ export function speakerEndpoints(config, options) {
                     .map((s) => ({ end: Number(s?.end), start: Number(s?.start) }))
                     .filter((s) => Number.isFinite(s.start) && s.end > s.start);
                 const total = spans.reduce((t, s) => t + (s.end - s.start), 0);
-                if (typeof body.recordingId !== 'string' || !Number.isInteger(body.speaker) || total < PICK_MIN_S - 0.05 || total > PICK_MAX_S + 0.5) {
+                if (typeof body.transcriptionId !== 'string' || !Number.isInteger(body.speaker) || total < PICK_MIN_S - 0.05 || total > PICK_MAX_S + 0.5) {
                     return json({ error: `Pick ${PICK_MIN_S} to ${PICK_MAX_S} seconds of their speech.` }, 400);
                 }
-                const source = await ownRecording(req, doc, body.recordingId);
+                const source = await ownSource(req, doc, body.transcriptionId);
                 if (!source)
-                    return json({ error: 'That recording is not one of theirs.' }, 403);
+                    return json({ error: 'That transcription is not one of theirs.' }, 403);
                 try {
-                    // A failed lookup is an error to show, not a reason to try the retired /v1/voices/from-speaker.
-                    const transcriptionId = source.transcriptionId ?? (await api.job(source.recordingId)).transcriptionId;
-                    const trial = await api.speakerFromAppearance({ draft: true, name: nameOf(req, doc), recordingId: source.recordingId, spans, speaker: body.speaker, transcriptionId }, `payload:${collection}:${id}:trial:${randomUUID()}`);
+                    const trial = await api.speakerFromAppearance({ draft: true, name: nameOf(req, doc), spans, speaker: body.speaker, transcriptionId: source.transcriptionId }, `payload:${collection}:${id}:trial:${randomUUID()}`);
                     // The trial it replaces (other samples picked) is not wanted any more.
                     if (typeof body.replace === 'string' && body.replace !== trial.id)
                         await dropTrial(api, body.replace);
@@ -439,7 +439,7 @@ export function lookupEndpoints(options) {
                 if (!lang)
                     return json({ error: 'Which language?' }, 400);
                 try {
-                    return json(await client.availableVoices(lang, req.searchParams.get('recording') ?? undefined));
+                    return json(await client.availableVoices(lang, req.searchParams.get('transcription') ?? undefined));
                 }
                 catch (err) {
                     return apiError(err);

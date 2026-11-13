@@ -19,7 +19,6 @@ export type Job = {
         processedS?: number;
         totalS?: null | number;
     };
-    recordingId: string;
     state: JobState;
     transcriptionId: string;
 };
@@ -71,7 +70,7 @@ export type VoiceOption = {
     quality: number;
     ready?: boolean;
 };
-/** A recording's spoken translation in one language, in one cast of voices. */
+/** A transcription's spoken translation in one language, in one cast of voices. */
 export type VoiceTrack = {
     /** Seconds each sentence's clip lasts, by sentence id. */
     clipDur?: Record<string, number>;
@@ -107,7 +106,7 @@ export type Languages = {
     voice: string[];
 };
 export declare const UNAVAILABLE = "VocalStack is unavailable, try again shortly.";
-/** A stored recording the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
+/** A stored transcription the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
 export declare const NOT_IN_WORKSPACE = "This transcript is not in the connected VocalStack workspace: it was made in another workspace, or deleted in VocalStack. Transcribe the file again to work with it here.";
 export declare class VocalStackAPIError extends Error {
     code: string;
@@ -129,18 +128,18 @@ export declare class VocalStackAPI {
         name: string;
         spokenLanguage?: string;
     }): Promise<Transcription>;
-    job(recordingId: string): Promise<Job>;
+    job(transcriptionId: string): Promise<Job>;
     /** Stop a job before it is done. Its job fails with `stopped`; what was transcribed so far stays in VocalStack. */
-    stop(recordingId: string, reason?: string): Promise<unknown>;
-    transcript(recordingId: string): Promise<Transcript>;
+    stop(transcriptionId: string, reason?: string): Promise<unknown>;
+    transcript(transcriptionId: string): Promise<Transcript>;
     /**
      * The translations VocalStack already holds for `lang`, by sentence id. `/translation`
      * answers only the sentences it translates in that call, so stored ones are read here.
      */
-    storedTranslations(recordingId: string, lang: string): Promise<Record<string, string>>;
+    storedTranslations(transcriptionId: string, lang: string): Promise<Record<string, string>>;
     languages(): Promise<Languages>;
     /** Sentences translated into `lang`, by sentence id. Untranslated ones are translated now, which takes a while. */
-    translation(recordingId: string, lang: string, sentenceIds: number[]): Promise<{
+    translation(transcriptionId: string, lang: string, sentenceIds: number[]): Promise<{
         lang: string;
         translations: Record<string, string>;
     }>;
@@ -151,17 +150,17 @@ export declare class VocalStackAPI {
      * everyone in stock voices. Each track says which it got (`voices`: cloned, synthetic or mixed).
      * A clone only ever reads words its own speaker said.
      */
-    speak(recordingId: string, langs: string[], as?: SpeakAs): Promise<VoiceTrack[]>;
-    voiceTracks(recordingId: string, lang?: string): Promise<VoiceTrack[]>;
-    /** An address of the recording's audio, or of a spoken translation's, that works for an hour or so. */
-    audioURL(recordingId: string, opts: {
+    speak(transcriptionId: string, langs: string[], as?: SpeakAs): Promise<VoiceTrack[]>;
+    voiceTracks(transcriptionId: string, lang?: string): Promise<VoiceTrack[]>;
+    /** An address of the transcription's audio, or of a spoken translation's, that works for an hour or so. */
+    audioURL(transcriptionId: string, opts: {
         format?: 'caf' | 'mp3' | 'ogg';
         kind: 'delivery' | 'voice';
         lang?: string;
         voice?: string;
     }): Promise<string>;
-    /** A stretch of the recording as WAV (16 kHz mono), at most 120 s. */
-    clip(recordingId: string, startS: number, endS: number): Promise<Response>;
+    /** A stretch of the transcription's audio as WAV (16 kHz mono), at most 120 s. */
+    clip(transcriptionId: string, startS: number, endS: number): Promise<Response>;
     savedSpeaker(id: string): Promise<SavedSpeaker>;
     /** Save a speaker from a recorded sample (30 s or more), cloning their voice. Needs the speaker's permission. */
     createSpeaker(sample: Blob, fileName: string, meta: {
@@ -169,27 +168,26 @@ export declare class VocalStackAPI {
         name: string;
     }, idempotencyKey: string): Promise<SavedSpeaker>;
     /**
-     * Save a speaker from stretches of a transcribed recording (5–60 s in all), cloning their voice.
+     * Save a speaker from stretches of a transcription (5–60 s in all), cloning their voice.
      * `draft` makes a trial to hear first; keep it with `keepSpeaker`, or delete it. Saved speakers
-     * are the ones VocalStack looks for first when it works out who speaks in a new recording.
+     * are the ones VocalStack looks for first when it works out who speaks in a new transcription.
      */
     speakerFromAppearance(opts: {
         draft: boolean;
         name: string;
-        recordingId: string;
         spans: {
             end: number;
             start: number;
         }[];
         speaker: number;
-        transcriptionId?: string;
+        transcriptionId: string;
     }, idempotencyKey: string): Promise<SavedSpeaker>;
     /** Keep a trial speaker, as `name`, with the speaker's permission. */
     keepSpeaker(id: string, name: string): Promise<SavedSpeaker>;
     deleteSpeaker(id: string): Promise<void>;
     /** The saved speaker's cloned voice speaking a few seconds of `lang`, Ogg/Opus or CAF. 202 while it is being made. */
     speakerVoicePreview(id: string, lang?: string, format?: 'caf' | 'ogg'): Promise<Response>;
-    availableVoices(lang: string, recordingId?: string): Promise<{
+    availableVoices(lang: string, transcriptionId?: string): Promise<{
         lang: string;
         voices: VoiceOption[];
     }>;

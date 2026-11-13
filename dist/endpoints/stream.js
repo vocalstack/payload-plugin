@@ -25,8 +25,8 @@ export function streamEndpoint(collection, options, rowFields) {
             const target = await locate(req, collection, options, rowFields, 'user');
             if (target instanceof Response)
                 return target;
-            const recordingId = target.data.recordingId;
-            if (target.data.status !== 'processing' || !recordingId)
+            const transcriptionId = target.data.transcriptionId;
+            if (target.data.status !== 'processing' || !transcriptionId)
                 return Response.json({ status: target.data.status ?? 'idle', vocalstack: target.data });
             const apiKey = await resolveAPIKey(req, options);
             if (!apiKey)
@@ -57,7 +57,7 @@ export function streamEndpoint(collection, options, rowFields) {
                     };
                     // VocalStack signals the end several ways (progress, state, socket close); check once at a time.
                     let settling;
-                    const settle = () => (settling ??= checkJob(api, target, recordingId)
+                    const settle = () => (settling ??= checkJob(api, target, transcriptionId)
                         .then((r) => (r.status === 'processing' ? undefined : finish(r)), (err) => finish({ error: err.message, status: 'failed' }))
                         .finally(() => (settling = undefined)));
                     // What the page has been told: settled sentences by id, the words of committed
@@ -83,7 +83,7 @@ export function streamEndpoint(collection, options, rowFields) {
                     };
                     controller.enqueue(encoder.encode('retry: 2000\n\n'));
                     heartbeat = setInterval(() => !closed && controller.enqueue(encoder.encode(': ping\n\n')), 15000);
-                    const wsURL = `${apiURL.replace(/^http/, 'ws')}/v1/recordings/${encodeURIComponent(recordingId)}/subscribe`;
+                    const wsURL = `${apiURL.replace(/^http/, 'ws')}/v1/transcriptions/${encodeURIComponent(transcriptionId)}/subscribe`;
                     // Node's WebSocket (undici) takes headers, which the DOM type does not know about.
                     socket = new WebSocket(wsURL, { headers: { authorization: `Bearer ${apiKey}` } });
                     socket.onmessage = (message) => {
@@ -115,7 +115,7 @@ export function streamEndpoint(collection, options, rowFields) {
                                 if (frame.type === 'subscribe.ready') {
                                     // Catch up on everything said before the socket opened. Live frames that
                                     // arrive meanwhile update the same maps by id, so the overlap is harmless.
-                                    void api.transcript(recordingId).then((t) => {
+                                    void api.transcript(transcriptionId).then((t) => {
                                         for (const g of t.segments ?? [])
                                             if (!g.suppressed && g.words)
                                                 segmentWords.set(g.seq, g.words);

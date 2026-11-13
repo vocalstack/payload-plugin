@@ -146,10 +146,10 @@ export function apiError(err: unknown): Response {
  * Where a job stands, saving the outcome on the document once it is over: the
  * whole transcript when done, the reason when it failed.
  */
-export async function checkJob(api: VocalStackAPI, target: Target, recordingId: string): Promise<StatusResponse> {
+export async function checkJob(api: VocalStackAPI, target: Target, transcriptionId: string): Promise<StatusResponse> {
   let job: Job
   try {
-    job = await api.job(recordingId)
+    job = await api.job(transcriptionId)
   } catch (err) {
     if (!(err instanceof VocalStackAPIError && err.message === NOT_IN_WORKSPACE)) throw err
     // The job is not this key's to see (the workspace was changed while it ran, or it was deleted):
@@ -165,14 +165,14 @@ export async function checkJob(api: VocalStackAPI, target: Target, recordingId: 
     const progress = job.state === 'fetching' ? (job.progress.phasePct ?? 0) : job.progress.pct
     if (job.state !== 'transcribing') return { phase: job.progress.phase ?? job.state, progress, status: 'processing' }
     // Sentences are readable while the job runs; send what is there so far.
-    const partial = await api.transcript(recordingId).then(toSentences, () => undefined)
+    const partial = await api.transcript(transcriptionId).then(toSentences, () => undefined)
     return { audio: { processedS: job.progress.processedS ?? 0, totalS: job.progress.totalS ?? undefined }, partial, phase: 'transcribing', progress, status: 'processing' }
   }
-  let saving = finishing.get(recordingId)
+  let saving = finishing.get(transcriptionId)
   if (!saving) {
-    saving = saveTranscript(api, target, recordingId)
-    finishing.set(recordingId, saving)
-    void saving.catch(() => undefined).then(() => finishing.delete(recordingId))
+    saving = saveTranscript(api, target, transcriptionId)
+    finishing.set(transcriptionId, saving)
+    void saving.catch(() => undefined).then(() => finishing.delete(transcriptionId))
   }
   return saving
 }
@@ -187,14 +187,14 @@ async function restore(target: Target): Promise<StatusResponse> {
   return { status, stopped: true, vocalstack: await target.save({ error: null, status }) }
 }
 
-async function saveTranscript(api: VocalStackAPI, target: Target, recordingId: string): Promise<StatusResponse> {
-  const transcript = await api.transcript(recordingId)
+async function saveTranscript(api: VocalStackAPI, target: Target, transcriptionId: string): Promise<StatusResponse> {
+  const transcript = await api.transcript(transcriptionId)
   const sentences = toSentences(transcript)
   const vocalstack = await target.save({
     error: null,
     language: transcript.lang ?? transcript.sentences.find((s) => s.language)?.language ?? null,
     sentences,
-    // A new recording: translations and readings of the old one no longer match it.
+    // A new transcript: translations and readings of the old one no longer match it.
     speech: null,
     status: 'done',
     transcribedAt: new Date().toISOString(),
@@ -237,7 +237,7 @@ export function transcribeEndpoints(collection: CollectionSlug, options: VocalSt
             ? await api.transcribeURL(url, call)
             : await api.transcribeFile(await fetchFile(req, url), decodeURIComponent(new URL(url).pathname.split('/').pop() || target.fileName), call)
           if (!tx.job) throw new Error('VocalStack did not start a job for this file.')
-          const vocalstack = await target.save({ error: null, recordingId: tx.job.recordingId, status: 'processing', transcriptionId: tx.id })
+          const vocalstack = await target.save({ error: null, recordingId: null, status: 'processing', transcriptionId: tx.id })
           return json({ phase: tx.job.state, progress: 0, status: 'processing', vocalstack } satisfies StatusResponse, 202)
         } catch (err) {
           return apiError(err)
@@ -254,12 +254,12 @@ export function transcribeEndpoints(collection: CollectionSlug, options: VocalSt
         if (target instanceof Response) return target
 
         const field = target.data
-        if (field.status !== 'processing' || !field.recordingId) return json({ status: field.status ?? 'idle', vocalstack: field } satisfies StatusResponse)
+        if (field.status !== 'processing' || !field.transcriptionId) return json({ status: field.status ?? 'idle', vocalstack: field } satisfies StatusResponse)
 
         const apiKey = await resolveAPIKey(req, options)
         if (!apiKey) return json({ code: 'not_connected', error: 'Connect VocalStack first.' }, 409)
         try {
-          return json(await checkJob(new VocalStackAPI(apiKey, apiURL), target, field.recordingId))
+          return json(await checkJob(new VocalStackAPI(apiKey, apiURL), target, field.transcriptionId))
         } catch (err) {
           return apiError(err)
         }
@@ -278,16 +278,16 @@ export function transcribeEndpoints(collection: CollectionSlug, options: VocalSt
 
         const target = await locate(req, collection, options, rowFields, 'admin')
         if (target instanceof Response) return target
-        const { recordingId, status } = target.data
-        if (status !== 'processing' || !recordingId) return json({ status: status ?? 'idle', vocalstack: target.data } satisfies StatusResponse)
+        const { transcriptionId, status } = target.data
+        if (status !== 'processing' || !transcriptionId) return json({ status: status ?? 'idle', vocalstack: target.data } satisfies StatusResponse)
 
         const api = new VocalStackAPI(apiKey, apiURL)
         try {
-          await api.stop(recordingId, 'Stopped from Payload')
+          await api.stop(transcriptionId, 'Stopped from Payload')
           return json(await restore(target))
         } catch (err) {
           // Too late to stop: the job ended meanwhile, so take its outcome instead.
-          if (err instanceof VocalStackAPIError && err.status === 409) return json(await checkJob(api, target, recordingId).catch(() => restore(target)))
+          if (err instanceof VocalStackAPIError && err.status === 409) return json(await checkJob(api, target, transcriptionId).catch(() => restore(target)))
           return apiError(err)
         }
       },

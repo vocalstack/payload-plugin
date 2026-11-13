@@ -12,7 +12,7 @@ export type VocalStackPluginOptions = {
      * `overrides` adjusts the added collection (access, labels, admin, upload
      * options). A host may instead define its own upload collection with that slug;
      * the plugin then uses it as it is. It needs to accept `audio/mpeg` and have text
-     * fields `lang`, `recordingId` and `voice`.
+     * fields `lang`, `transcriptionId` and `voice` (and `recordingId`, kept for readings saved before 0.9.0).
      */
     readings?: false | {
         overrides?: (collection: CollectionConfig) => CollectionConfig;
@@ -116,18 +116,22 @@ export type SpeakerCollectionConfig = {
     name?: (args: {
         doc: Record<string, unknown>;
     }) => string;
-    /** Transcribed recordings this person speaks in, offered as the sample to clone from. */
+    /** Transcriptions this person speaks in, offered as the sample to clone from. */
+    transcriptions?: (args: {
+        doc: Record<string, unknown>;
+        req: PayloadRequest;
+    }) => Promise<SpeakerSource[]> | SpeakerSource[];
+    /** @deprecated The name before 0.9.0; use `transcriptions`. Sources without a `transcriptionId` are left out. */
     recordings?: (args: {
         doc: Record<string, unknown>;
         req: PayloadRequest;
     }) => Promise<SpeakerSource[]> | SpeakerSource[];
 };
-/** A transcribed recording to take a voice sample from. */
+/** A transcription to take a voice sample from. */
 export type SpeakerSource = {
     label: string;
-    recordingId: string;
     sentences?: TranscriptSentence[];
-    transcriptionId?: string;
+    transcriptionId: string;
 };
 export type CloneState = 'failed' | 'none' | 'ready' | 'training';
 /** The `vocalstackSpeaker` group on a speaker collection's documents. */
@@ -232,6 +236,7 @@ export type TranscriptStatus = 'done' | 'failed' | 'idle' | 'processing';
 export type VocalStackFieldData = {
     error?: null | string;
     language?: null | string;
+    /** Saved before 0.9.0 beside `transcriptionId`; no longer read from VocalStack. */
     recordingId?: null | string;
     sentences?: null | TranscriptSentence[];
     status?: null | TranscriptStatus;

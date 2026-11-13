@@ -24,7 +24,7 @@ export declare function apiError(err: unknown): Response;
  * Where a job stands, saving the outcome on the document once it is over: the
  * whole transcript when done, the reason when it failed.
  */
-export declare function checkJob(api: VocalStackAPI, target: Target, recordingId: string): Promise<StatusResponse>;
+export declare function checkJob(api: VocalStackAPI, target: Target, transcriptionId: string): Promise<StatusResponse>;
 /**
  * POST /:id/vocalstack/transcribe and GET /:id/vocalstack/status. With no query
  * they act on the upload document itself; with `?field=<array>&row=<row id>` on one row.

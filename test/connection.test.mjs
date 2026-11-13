@@ -249,22 +249,31 @@ test('only someone who may manage the connection can cancel a connect', async ()
 })
 
 test("a job the new workspace's key cannot see fails with a plain sentence instead of staying in progress", async () => {
-  answers['/v1/recordings/rec-1/job'] = () => reply({ code: 'not_found', message: 'no such recording' }, 404)
+  answers['/v1/transcriptions/tx-1/job'] = () => reply({ code: 'not_found', message: 'no such transcription' }, 404)
   const saved = []
-  const target = { data: { recordingId: 'rec-1', status: 'processing' }, save: async (patch) => (saved.push(patch), { ...patch }) }
-  const res = await checkJob(new VocalStackAPI('vs_key_new', API), target, 'rec-1')
+  const target = { data: { status: 'processing', transcriptionId: 'tx-1' }, save: async (patch) => (saved.push(patch), { ...patch }) }
+  const res = await checkJob(new VocalStackAPI('vs_key_new', API), target, 'tx-1')
   assert.equal(res.status, 'failed')
   assert.equal(res.error, NOT_IN_WORKSPACE)
   assert.deepEqual(saved, [{ error: NOT_IN_WORKSPACE, status: 'failed' }])
 })
 
-test("a finished transcript's recording in another workspace reads as a plain sentence", async () => {
-  answers['/v1/recordings/rec-1/transcript'] = () => reply({ code: 'not_found', message: 'no such recording' }, 404)
-  await assert.rejects(new VocalStackAPI('vs_key_new', API).transcript('rec-1'), (err) => err.status === 404 && err.message === NOT_IN_WORKSPACE)
-  answers['/v1/recordings/rec-1/voice'] = () => reply({ code: 'not_found', message: 'no such recording' }, 404)
-  await assert.rejects(new VocalStackAPI('vs_key_new', API).speak('rec-1', ['fr']), (err) => err.status === 404 && err.message === NOT_IN_WORKSPACE)
+test('a finished transcript in another workspace reads as a plain sentence', async () => {
+  answers['/v1/transcriptions/tx-1/transcript'] = () => reply({ code: 'not_found', message: 'no such transcription' }, 404)
+  await assert.rejects(new VocalStackAPI('vs_key_new', API).transcript('tx-1'), (err) => err.status === 404 && err.message === NOT_IN_WORKSPACE)
+  answers['/v1/transcriptions/tx-1/voice'] = () => reply({ code: 'not_found', message: 'no such transcription' }, 404)
+  await assert.rejects(new VocalStackAPI('vs_key_new', API).speak('tx-1', ['fr']), (err) => err.status === 404 && err.message === NOT_IN_WORKSPACE)
+})
+
+test('a reading is asked for by transcription, in the voices chosen', async () => {
+  let sent
+  answers['/v1/transcriptions/tx-1/voice'] = ({ init }) => ((sent = init), reply([{ clips: [], lang: 'fr', state: 'queued', voiceKey: '' }]))
+  const tracks = await new VocalStackAPI('vs_key', API).speak('tx-1', ['fr'], { cloned: true })
+  assert.equal(tracks[0].lang, 'fr')
+  assert.equal(sent.method, 'POST')
+  assert.deepEqual(JSON.parse(sent.body), { langs: ['fr'], voices: 'cloned' })
 })
 
 test('a wrong API address is not mistaken for a transcript in another workspace', async () => {
-  await assert.rejects(new VocalStackAPI('vs_key_new', API).job('rec-1'), (err) => err.status === 404 && /^no route/.test(err.message))
+  await assert.rejects(new VocalStackAPI('vs_key_new', API).job('tx-1'), (err) => err.status === 404 && /^no route/.test(err.message))
 })

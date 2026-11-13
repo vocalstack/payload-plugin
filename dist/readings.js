@@ -18,7 +18,8 @@ export const readingsCollection = (slug) => ({
     upload: { mimeTypes: ['audio/mpeg'] },
     fields: [
         { name: 'lang', type: 'text', admin: { readOnly: true } },
-        { name: 'recordingId', type: 'text', admin: { readOnly: true } },
+        { name: 'transcriptionId', type: 'text', admin: { readOnly: true } },
+        { name: 'recordingId', type: 'text', admin: { hidden: true, readOnly: true } },
         { name: 'voice', type: 'text', admin: { readOnly: true } },
     ],
 });

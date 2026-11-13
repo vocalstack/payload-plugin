@@ -250,7 +250,7 @@ export const VoiceFromRecording: React.FC<{
     setError(undefined)
     try {
       const r = await call<{ voice: Omit<Trial, 'key'> }>(`${base}/trial`, {
-        body: JSON.stringify({ recordingId: source.recordingId, replace: trial?.id, spans: spansOf(clips, picked), speaker }),
+        body: JSON.stringify({ replace: trial?.id, spans: spansOf(clips, picked), speaker, transcriptionId: source.transcriptionId }),
         method: 'POST',
       })
       setTrial({ ...r.voice, key: pickKey })
@@ -309,7 +309,7 @@ export const VoiceFromRecording: React.FC<{
               value={sourceIdx}
             >
               {sources.map((s, i) => (
-                <option key={s.recordingId} value={i}>
+                <option key={s.transcriptionId} value={i}>
                   {s.label}
                 </option>
               ))}
@@ -344,7 +344,7 @@ export const VoiceFromRecording: React.FC<{
                 </div>
                 <div className="vs-sample-text">{clip.text}</div>
                 <SampleAudio
-                  src={`${apiBase}${base}/clip?${new URLSearchParams({ endS: clip.end.toFixed(2), recording: source.recordingId, startS: clip.start.toFixed(2) })}`}
+                  src={`${apiBase}${base}/clip?${new URLSearchParams({ endS: clip.end.toFixed(2), startS: clip.start.toFixed(2), transcription: source.transcriptionId })}`}
                 />
               </div>
               <label className="vs-sample-use" style={{ opacity: room ? 1 : 0.5 }}>

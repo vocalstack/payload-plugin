@@ -14,17 +14,17 @@ export declare const legacyVoiceData: ({ cloneId, speakerId, ...rest }: SpeakerF
 /**
  * A person saved as a VocalStack speaker, with their cloned voice, kept in the `vocalstackSpeaker` group of their document:
  *   GET    /:id/vocalstack/speaker            where its voice's training stands
- *   POST   /:id/vocalstack/speaker            save and clone them: JSON { recordingId, startS, endS, consent },
+ *   POST   /:id/vocalstack/speaker            save and clone them: JSON { transcriptionId, startS, endS, consent },
  *                                             or multipart with a `file` sample and `_payload` { consent }
  *   DELETE /:id/vocalstack/speaker            delete it, and its voice, in VocalStack too
- *   GET    /:id/vocalstack/speaker/sources    recordings to take the sample from
- *   GET    /:id/vocalstack/speaker/clip       a stretch of one of them, to hear before cloning (?recording=&startS=&endS=)
+ *   GET    /:id/vocalstack/speaker/sources    transcriptions to take the sample from
+ *   GET    /:id/vocalstack/speaker/clip       a stretch of one of them, to hear before cloning (?transcription=&startS=&endS=)
  *   GET    /:id/vocalstack/speaker/preview    the voice speaking (?lang=&format=ogg|caf)
- *   POST   /:id/vocalstack/speaker/trial      a trial from picked sentences { recordingId, speaker, spans, replace? }
+ *   POST   /:id/vocalstack/speaker/trial      a trial from picked sentences { transcriptionId, speaker, spans, replace? }
  *   GET    /:id/vocalstack/speaker/trial      ?voice= where it stands; …/trial/preview?voice=&lang=&format= hear it
  *   POST   /:id/vocalstack/speaker/trial/keep { voice, name, consent } keep it as their speaker; DELETE …/trial?voice= drop it
  * Each also answers under /:id/vocalstack/voice…, its path in 0.5.
- * A sample is only ever taken from the recordings `config.recordings` offers for that document.
+ * A sample is only ever taken from the transcriptions `config.transcriptions` offers for that document.
  */
 export declare function speakerEndpoints(config: SpeakerCollectionConfig, options: VocalStackPluginOptions): Endpoint[];
 /**

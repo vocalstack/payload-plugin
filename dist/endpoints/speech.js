@@ -53,7 +53,7 @@ async function translate(api, target, lang, deadline) {
     // What VocalStack translated before (for anyone) costs nothing to read back; only the rest is translated.
     if (missing.length) {
         try {
-            const stored = await api.storedTranslations(target.data.recordingId, lang);
+            const stored = await api.storedTranslations(target.data.transcriptionId, lang);
             for (const id of missing)
                 if (stored[String(id)]?.trim())
                     got.set(id, stored[String(id)].trim());
@@ -90,7 +90,7 @@ async function translate(api, target, lang, deadline) {
                 return;
             }
             try {
-                const { translations } = await api.translation(target.data.recordingId, lang, batch);
+                const { translations } = await api.translation(target.data.transcriptionId, lang, batch);
                 for (const [id, text] of Object.entries(translations))
                     if (text?.trim())
                         got.set(Number(id), text.trim());
@@ -137,7 +137,7 @@ async function keepReading(req, api, slug, target, lang, speech) {
     const keys = [...new Set([speech.voice || undefined, undefined])];
     let res;
     for (const voice of keys) {
-        const src = await api.audioURL(target.data.recordingId, { kind: 'voice', lang, voice });
+        const src = await api.audioURL(target.data.transcriptionId, { kind: 'voice', lang, voice });
         // The first ask makes the MP3 (a long reading takes a while); VocalStack finishes it even
         // when this gives up, and a later look finds it ready.
         res = await fetch(src, { signal: AbortSignal.timeout(90_000) });
@@ -154,7 +154,7 @@ async function keepReading(req, api, slug, target, lang, speech) {
     const data = Buffer.from(await res.arrayBuffer());
     const doc = (await req.payload.create({
         collection: slug,
-        data: { lang, recordingId: target.data.recordingId, voice: speech.voice ?? '' },
+        data: { lang, transcriptionId: target.data.transcriptionId, voice: speech.voice ?? '' },
         file: { data, mimetype: 'audio/mpeg', name: readingName(target, lang, speech.voice), size: data.length },
         overrideAccess: true,
         req,
@@ -169,19 +169,19 @@ async function dropReading(req, slug, speech) {
         return;
     await req.payload.delete({ collection: slug, id: speech.audio.id, overrideAccess: true, req }).catch(() => { });
 }
-/** Delete kept readings of this recording, in these languages, that the field does not point to. */
+/** Delete kept readings of this transcription, in these languages, that the field does not point to. */
 async function sweepReadings(req, slug, data, langs) {
-    if (!data.recordingId || !langs.length)
+    if (!data.transcriptionId || !langs.length)
         return;
-    const found = await req.payload.find({
-        collection: slug,
-        depth: 0,
-        limit: 50,
-        overrideAccess: true,
-        pagination: false,
-        req,
-        where: { and: [{ recordingId: { equals: data.recordingId } }, { lang: { in: langs } }] },
-    });
+    // Readings saved before 0.9.0 carry the old `recordingId` of the same transcript instead; a host's own collection may have no such field.
+    const keys = [{ transcriptionId: { equals: data.transcriptionId } }, ...(data.recordingId ? [{ recordingId: { equals: data.recordingId } }] : [])];
+    const found = { docs: [] };
+    for (const key of keys) {
+        const page = await req.payload
+            .find({ collection: slug, depth: 0, limit: 50, overrideAccess: true, pagination: false, req, where: { and: [key, { lang: { in: langs } }] } })
+            .catch(() => undefined);
+        found.docs.push(...(page?.docs ?? []));
+    }
     const keep = new Set(langs.map((l) => data.speech?.[l]?.audio?.id).filter((id) => id !== undefined).map(String));
     for (const doc of found.docs)
         if (!keep.has(String(doc.id)))
@@ -266,11 +266,11 @@ const hasWork = (data, readings) => {
  */
 async function refresh(req, api, readings, target, key) {
     const { pending, unkept } = waiting(target.data, readings);
-    if ((!pending.length && !unkept.length) || !target.data.recordingId)
+    if ((!pending.length && !unkept.length) || !target.data.transcriptionId)
         return target.data;
     const next = {};
     if (pending.length) {
-        const tracks = await api.voiceTracks(target.data.recordingId);
+        const tracks = await api.voiceTracks(target.data.transcriptionId);
         for (const [lang, speech] of pending) {
             const settled = settle(speech, trackFor(tracks, lang, speech), target.data.translations?.[lang]);
             if (settled.state !== speech.state || settled.error !== speech.error || settled.done !== speech.done)
@@ -357,7 +357,7 @@ async function advance(req, api, readings, target, key, budgetMs, speakAs) {
             continue;
         try {
             const as = await speakAs();
-            const tracks = await api.speak(data.recordingId, [lang], as);
+            const tracks = await api.speak(data.transcriptionId, [lang], as);
             const requestedAt = new Date().toISOString();
             const voice = askedKey(tracks, lang);
             data = await target.save((current) => ({
@@ -480,7 +480,7 @@ const rowOf = (req) => {
  * response, so a translation or reading is ready for listeners without an editor watching.
  */
 export function refreshAfterRead(payload, collection, options, rowFields, id, data, where) {
-    if (!data?.recordingId || !hasWork(data, readingsSlug(options)))
+    if (!data?.transcriptionId || !hasWork(data, readingsSlug(options)))
         return;
     background(payload, collection, options, rowFields, id, where);
 }
@@ -517,7 +517,7 @@ export function speechEndpoints(collection, options, rowFields) {
         const target = await locate(req, collection, options, rowFields, 'admin');
         if (target instanceof Response)
             return target;
-        if (target.data.status !== 'done' || !target.data.recordingId)
+        if (target.data.status !== 'done' || !target.data.transcriptionId)
             return json({ error: 'Transcribe the audio first.' }, 409);
         return { api: new VocalStackAPI(apiKey, apiURL), target };
     };
@@ -635,7 +635,7 @@ export function speechEndpoints(collection, options, rowFields) {
                     let data = target.data;
                     if (ready.length) {
                         const { as } = await voiceModeOf(req, collection, options, target);
-                        const tracks = await api.speak(target.data.recordingId, ready, as);
+                        const tracks = await api.speak(target.data.transcriptionId, ready, as);
                         for (const lang of ready)
                             await dropReading(req, readings, data.speech?.[lang]);
                         const requestedAt = new Date().toISOString();
@@ -670,7 +670,7 @@ export function speechEndpoints(collection, options, rowFields) {
                 const { fixed, mode } = await voiceModeOf(req, collection, options, target);
                 const voiceMode = { fixed, mode };
                 const answer = (vocalstack) => json({ vocalstack, voiceMode });
-                if (!target.data.recordingId || !hasWork(target.data, readings))
+                if (!target.data.transcriptionId || !hasWork(target.data, readings))
                     return answer(target.data);
                 // Translating goes on in the background; readings are looked at now.
                 if (waiting(target.data, readings).translating.length)
@@ -696,8 +696,8 @@ export function speechEndpoints(collection, options, rowFields) {
                 const target = await locate(req, collection, options, rowFields, 'user');
                 if (target instanceof Response)
                     return target;
-                const { language, recordingId, speech } = target.data;
-                if (!recordingId)
+                const { language, transcriptionId, speech } = target.data;
+                if (!transcriptionId)
                     return json({ error: 'No audio.' }, 404);
                 const lang = req.searchParams.get('lang')?.toLowerCase();
                 const spoken = !lang || lang === language;
@@ -713,7 +713,7 @@ export function speechEndpoints(collection, options, rowFields) {
                 if (!apiKey)
                     return json({ error: 'Not available.' }, 404);
                 try {
-                    const url = await new VocalStackAPI(apiKey, apiURL).audioURL(recordingId, spoken ? { kind: 'delivery' } : { kind: 'voice', lang, voice: reading?.voice ?? undefined });
+                    const url = await new VocalStackAPI(apiKey, apiURL).audioURL(transcriptionId, spoken ? { kind: 'delivery' } : { kind: 'voice', lang, voice: reading?.voice ?? undefined });
                     // The signed address lasts a while; hand out the same one for a few minutes.
                     return new Response(null, { headers: { 'cache-control': 'public, max-age=300, s-maxage=300', location: url }, status: 302 });
                 }
@@ -730,7 +730,7 @@ export function speechEndpoints(collection, options, rowFields) {
         const target = await locate(req, collection, options, rowFields, 'user');
         if (target instanceof Response)
             return target;
-        if (target.data.status !== 'done' || !target.data.recordingId)
+        if (target.data.status !== 'done' || !target.data.transcriptionId)
             return json({ error: 'There is no transcript to translate yet.' }, 409);
         return target;
     };

@@ -50,8 +50,8 @@ export function streamEndpoint(collection: CollectionSlug, options: VocalStackPl
       if (!req.user) return Response.json({ error: 'Sign in first.' }, { status: 401 })
       const target = await locate(req, collection, options, rowFields, 'user')
       if (target instanceof Response) return target
-      const recordingId = target.data.recordingId
-      if (target.data.status !== 'processing' || !recordingId) return Response.json({ status: target.data.status ?? 'idle', vocalstack: target.data } satisfies StatusResponse)
+      const transcriptionId = target.data.transcriptionId
+      if (target.data.status !== 'processing' || !transcriptionId) return Response.json({ status: target.data.status ?? 'idle', vocalstack: target.data } satisfies StatusResponse)
       const apiKey = await resolveAPIKey(req, options)
       if (!apiKey) return Response.json({ code: 'not_connected', error: 'Connect VocalStack first.' }, { status: 409 })
       const api = new VocalStackAPI(apiKey, apiURL)
@@ -81,7 +81,7 @@ export function streamEndpoint(collection: CollectionSlug, options: VocalStackPl
           // VocalStack signals the end several ways (progress, state, socket close); check once at a time.
           let settling: Promise<void> | undefined
           const settle = () =>
-            (settling ??= checkJob(api, target, recordingId)
+            (settling ??= checkJob(api, target, transcriptionId)
               .then((r) => (r.status === 'processing' ? undefined : finish(r)), (err) => finish({ error: (err as Error).message, status: 'failed' }))
               .finally(() => (settling = undefined)))
 
@@ -110,7 +110,7 @@ export function streamEndpoint(collection: CollectionSlug, options: VocalStackPl
           controller.enqueue(encoder.encode('retry: 2000\n\n'))
           heartbeat = setInterval(() => !closed && controller.enqueue(encoder.encode(': ping\n\n')), 15000)
 
-          const wsURL = `${apiURL.replace(/^http/, 'ws')}/v1/recordings/${encodeURIComponent(recordingId)}/subscribe`
+          const wsURL = `${apiURL.replace(/^http/, 'ws')}/v1/transcriptions/${encodeURIComponent(transcriptionId)}/subscribe`
           // Node's WebSocket (undici) takes headers, which the DOM type does not know about.
           socket = new WebSocket(wsURL, { headers: { authorization: `Bearer ${apiKey}` } } as unknown as string[])
           socket.onmessage = (message) => {
@@ -138,7 +138,7 @@ export function streamEndpoint(collection: CollectionSlug, options: VocalStackPl
                 if (frame.type === 'subscribe.ready') {
                   // Catch up on everything said before the socket opened. Live frames that
                   // arrive meanwhile update the same maps by id, so the overlap is harmless.
-                  void api.transcript(recordingId).then(
+                  void api.transcript(transcriptionId).then(
                     (t) => {
                       for (const g of t.segments ?? []) if (!g.suppressed && g.words) segmentWords.set(g.seq, g.words)
                       for (const s of toSentences(t)) if (s.id !== undefined && !sentences.has(s.id)) sentences.set(s.id, s)

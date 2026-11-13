@@ -24,9 +24,9 @@ function savedSpeakerOf(raw) {
 const speakerRoutes = new Map();
 const both = (rest) => ({ speakers: `/v1/speakers${rest}`, voices: `/v1/voices${rest}` });
 export const UNAVAILABLE = 'VocalStack is unavailable, try again shortly.';
-/** A stored recording the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
+/** A stored transcription the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
 export const NOT_IN_WORKSPACE = 'This transcript is not in the connected VocalStack workspace: it was made in another workspace, or deleted in VocalStack. Transcribe the file again to work with it here.';
-const isGone = (status, message) => status === 404 && /^no such (recording|transcription|job)\b/i.test(message.trim());
+const isGone = (status, message) => status === 404 && /^no such (transcription|job)\b/i.test(message.trim());
 export class VocalStackAPIError extends Error {
     code;
     status;
@@ -95,9 +95,9 @@ export class VocalStackAPI {
     transcribeFile(file, fileName, opts) {
         return call(() => this.sdk.transcriptions.create({ file, fileName, name: opts.name, settings: opts.spokenLanguage ? { spokenLanguage: opts.spokenLanguage } : undefined }, { idempotencyKey: opts.idempotencyKey }));
     }
-    async job(recordingId) {
+    async job(transcriptionId) {
         try {
-            return await call(() => this.sdk.jobs.get(recordingId));
+            return await call(() => this.sdk.transcriptions.job(transcriptionId));
         }
         catch (err) {
             // Any "not found" for a job that was started here means this key cannot see it (a wrong address says "no route").
@@ -107,18 +107,18 @@ export class VocalStackAPI {
         }
     }
     /** Stop a job before it is done. Its job fails with `stopped`; what was transcribed so far stays in VocalStack. */
-    stop(recordingId, reason) {
-        return call(() => this.sdk.recordings.stop(recordingId, reason));
+    stop(transcriptionId, reason) {
+        return call(() => this.sdk.transcriptions.stop(transcriptionId, reason));
     }
-    transcript(recordingId) {
-        return call(() => this.sdk.recordings.transcript(recordingId));
+    transcript(transcriptionId) {
+        return call(() => this.sdk.transcriptions.transcript(transcriptionId));
     }
     /**
      * The translations VocalStack already holds for `lang`, by sentence id. `/translation`
      * answers only the sentences it translates in that call, so stored ones are read here.
      */
-    async storedTranslations(recordingId, lang) {
-        const t = (await call(() => this.sdk.recordings.transcript(recordingId, { lang })));
+    async storedTranslations(transcriptionId, lang) {
+        const t = (await call(() => this.sdk.transcriptions.transcript(transcriptionId, { lang })));
         const out = {};
         for (const s of t.sentences ?? []) {
             const text = s.translations?.[lang];
@@ -131,8 +131,8 @@ export class VocalStackAPI {
         return call(() => this.sdk.languages.list());
     }
     /** Sentences translated into `lang`, by sentence id. Untranslated ones are translated now, which takes a while. */
-    translation(recordingId, lang, sentenceIds) {
-        return call(() => this.sdk.recordings.translation(recordingId, lang, sentenceIds));
+    translation(transcriptionId, lang, sentenceIds) {
+        return call(() => this.sdk.transcriptions.translation(transcriptionId, lang, sentenceIds));
     }
     /**
      * Read translations aloud, one job per language. `cloned` reads each speaker in their own cloned
@@ -141,39 +141,24 @@ export class VocalStackAPI {
      * everyone in stock voices. Each track says which it got (`voices`: cloned, synthetic or mixed).
      * A clone only ever reads words its own speaker said.
      */
-    async speak(recordingId, langs, as = { cloned: false }) {
-        const ask = { langs, voices: as.cloned ? 'cloned' : 'synthetic' };
-        // Straight to the API: the SDK on npm (2.0.0-alpha.1) leaves `voices` out of the body.
-        const res = await call(() => fetch(`${this.#baseURL}/v1/recordings/${encodeURIComponent(recordingId)}/voice`, {
-            body: JSON.stringify(ask),
-            headers: { authorization: `Bearer ${this.#apiKey}`, 'content-type': 'application/json' },
-            method: 'POST',
-            signal: AbortSignal.timeout(30_000),
-        }));
-        const body = (await res.json().catch(() => null));
-        if (res.ok)
-            return body;
-        if (res.status === 502 || res.status === 503 || res.status === 504)
-            throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE);
-        if (isGone(res.status, body?.message ?? ''))
-            throw new VocalStackAPIError(404, 'not_found', NOT_IN_WORKSPACE);
-        throw new VocalStackAPIError(res.status, body?.code ?? 'http_error', body?.message ?? `VocalStack answered ${res.status}`);
+    speak(transcriptionId, langs, as = { cloned: false }) {
+        return call(() => this.sdk.transcriptions.requestVoice(transcriptionId, { langs, voices: as.cloned ? 'cloned' : 'synthetic' }));
     }
-    voiceTracks(recordingId, lang) {
-        return call(() => this.sdk.recordings.voice(recordingId, lang));
+    voiceTracks(transcriptionId, lang) {
+        return call(() => this.sdk.transcriptions.voice(transcriptionId, lang));
     }
-    /** An address of the recording's audio, or of a spoken translation's, that works for an hour or so. */
-    async audioURL(recordingId, opts) {
+    /** An address of the transcription's audio, or of a spoken translation's, that works for an hour or so. */
+    async audioURL(transcriptionId, opts) {
         const format = opts.format ?? 'mp3';
         if (opts.kind === 'delivery')
-            return call(() => this.sdk.recordings.audioUrl(recordingId, { format, kind: 'delivery' }));
+            return call(() => this.sdk.transcriptions.audio(transcriptionId, { format, kind: 'delivery' }));
         // A reading in a named voice: a short-lived media token carries the voice in the address.
-        const { token } = await call(() => this.sdk.recordings.mediaToken(recordingId));
-        return this.sdk.recordings.audioSrc(recordingId, { format, kind: 'voice', lang: opts.lang, media: token, voice: opts.voice });
+        const { token } = await call(() => this.sdk.transcriptions.mediaToken(transcriptionId));
+        return this.sdk.transcriptions.audioSrc(transcriptionId, { format, kind: 'voice', lang: opts.lang, media: token, voice: opts.voice });
     }
-    /** A stretch of the recording as WAV (16 kHz mono), at most 120 s. */
-    clip(recordingId, startS, endS) {
-        return call(() => this.sdk.recordings.clip(recordingId, startS, endS));
+    /** A stretch of the transcription's audio as WAV (16 kHz mono), at most 120 s. */
+    clip(transcriptionId, startS, endS) {
+        return call(() => this.sdk.transcriptions.audioClip(transcriptionId, startS, endS));
     }
     async #speakerRequest(method, paths, init = {}) {
         const first = speakerRoutes.get(this.#baseURL) ?? 'speakers';
@@ -226,16 +211,14 @@ export class VocalStackAPI {
         return this.#speaker('POST', both(''), { form, idempotencyKey });
     }
     /**
-     * Save a speaker from stretches of a transcribed recording (5–60 s in all), cloning their voice.
+     * Save a speaker from stretches of a transcription (5–60 s in all), cloning their voice.
      * `draft` makes a trial to hear first; keep it with `keepSpeaker`, or delete it. Saved speakers
-     * are the ones VocalStack looks for first when it works out who speaks in a new recording.
+     * are the ones VocalStack looks for first when it works out who speaks in a new transcription.
      */
     speakerFromAppearance(opts, idempotencyKey) {
-        const { recordingId, speaker, transcriptionId, ...rest } = opts;
-        const common = { ...rest, consent: true, library: true };
-        return this.#speaker('POST', { speakers: transcriptionId ? '/v1/speakers/from-appearance' : undefined, voices: '/v1/voices/from-speaker' }, {
-            // The spans are times in this recording: name it, or the server takes the latest one the speaker is heard in.
-            body: (route) => (route === 'speakers' ? { ...common, appearance: speaker, recordingId, transcriptionId } : { ...common, recordingId, speaker }),
+        const { speaker, ...rest } = opts;
+        return this.#speaker('POST', { speakers: '/v1/speakers/from-appearance' }, {
+            body: () => ({ ...rest, appearance: speaker, consent: true, library: true }),
             idempotencyKey,
         });
     }
@@ -256,8 +239,8 @@ export class VocalStackAPI {
     speakerVoicePreview(id, lang, format = 'ogg') {
         return this.#speakerRequest('GET', both(`/${encodeURIComponent(id)}/preview`), { audio: true, query: { format, lang } });
     }
-    availableVoices(lang, recordingId) {
-        return call(() => this.sdk.voices.available(lang, { recording: recordingId }));
+    availableVoices(lang, transcriptionId) {
+        return call(() => this.sdk.voices.available(lang, { transcription: transcriptionId }));
     }
 }
 /** A short label for the connected account, from whatever `/v1/me` carries. */

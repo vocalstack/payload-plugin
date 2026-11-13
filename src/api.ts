@@ -17,7 +17,6 @@ export type Job = {
   /** Why a failed job failed; `stopped` when its owner stopped it. */
   errorCode?: null | string
   progress: { pct: number; phase?: null | string; phasePct?: null | number; processedS?: number; totalS?: null | number }
-  recordingId: string
   state: JobState
   transcriptionId: string
 }
@@ -79,7 +78,7 @@ const both = (rest: string): Record<SpeakerRoute, string> => ({ speakers: `/v1/s
 
 export type VoiceOption = { cloned: boolean; default: boolean; gender?: null | string; id: string; name: string; quality: number; ready?: boolean }
 
-/** A recording's spoken translation in one language, in one cast of voices. */
+/** A transcription's spoken translation in one language, in one cast of voices. */
 export type VoiceTrack = {
   /** Seconds each sentence's clip lasts, by sentence id. */
   clipDur?: Record<string, number>
@@ -112,11 +111,11 @@ export type Languages = {
 
 export const UNAVAILABLE = 'VocalStack is unavailable, try again shortly.'
 
-/** A stored recording the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
+/** A stored transcription the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
 export const NOT_IN_WORKSPACE =
   'This transcript is not in the connected VocalStack workspace: it was made in another workspace, or deleted in VocalStack. Transcribe the file again to work with it here.'
 
-const isGone = (status: number | undefined, message: string) => status === 404 && /^no such (recording|transcription|job)\b/i.test(message.trim())
+const isGone = (status: number | undefined, message: string) => status === 404 && /^no such (transcription|job)\b/i.test(message.trim())
 
 export class VocalStackAPIError extends Error {
   code: string
@@ -200,9 +199,9 @@ export class VocalStackAPI {
     )
   }
 
-  async job(recordingId: string) {
+  async job(transcriptionId: string) {
     try {
-      return await call(() => this.sdk.jobs.get(recordingId) as unknown as Promise<Job>)
+      return await call(() => this.sdk.transcriptions.job(transcriptionId) as unknown as Promise<Job>)
     } catch (err) {
       // Any "not found" for a job that was started here means this key cannot see it (a wrong address says "no route").
       if (err instanceof VocalStackAPIError && err.status === 404 && !/^no route\b/i.test(err.message)) throw new VocalStackAPIError(404, 'not_found', NOT_IN_WORKSPACE)
@@ -211,20 +210,20 @@ export class VocalStackAPI {
   }
 
   /** Stop a job before it is done. Its job fails with `stopped`; what was transcribed so far stays in VocalStack. */
-  stop(recordingId: string, reason?: string) {
-    return call(() => this.sdk.recordings.stop(recordingId, reason) as Promise<unknown>)
+  stop(transcriptionId: string, reason?: string) {
+    return call(() => this.sdk.transcriptions.stop(transcriptionId, reason) as Promise<unknown>)
   }
 
-  transcript(recordingId: string) {
-    return call(() => this.sdk.recordings.transcript(recordingId) as unknown as Promise<Transcript>)
+  transcript(transcriptionId: string) {
+    return call(() => this.sdk.transcriptions.transcript(transcriptionId) as unknown as Promise<Transcript>)
   }
 
   /**
    * The translations VocalStack already holds for `lang`, by sentence id. `/translation`
    * answers only the sentences it translates in that call, so stored ones are read here.
    */
-  async storedTranslations(recordingId: string, lang: string): Promise<Record<string, string>> {
-    const t = (await call(() => this.sdk.recordings.transcript(recordingId, { lang }))) as unknown as {
+  async storedTranslations(transcriptionId: string, lang: string): Promise<Record<string, string>> {
+    const t = (await call(() => this.sdk.transcriptions.transcript(transcriptionId, { lang }))) as unknown as {
       sentences?: { sentenceId: number; translations?: null | Record<string, string> }[]
     }
     const out: Record<string, string> = {}
@@ -240,8 +239,8 @@ export class VocalStackAPI {
   }
 
   /** Sentences translated into `lang`, by sentence id. Untranslated ones are translated now, which takes a while. */
-  translation(recordingId: string, lang: string, sentenceIds: number[]) {
-    return call(() => this.sdk.recordings.translation(recordingId, lang, sentenceIds))
+  translation(transcriptionId: string, lang: string, sentenceIds: number[]) {
+    return call(() => this.sdk.transcriptions.translation(transcriptionId, lang, sentenceIds))
   }
 
   /**
@@ -251,40 +250,26 @@ export class VocalStackAPI {
    * everyone in stock voices. Each track says which it got (`voices`: cloned, synthetic or mixed).
    * A clone only ever reads words its own speaker said.
    */
-  async speak(recordingId: string, langs: string[], as: SpeakAs = { cloned: false }): Promise<VoiceTrack[]> {
-    const ask = { langs, voices: as.cloned ? 'cloned' : 'synthetic' }
-    // Straight to the API: the SDK on npm (2.0.0-alpha.1) leaves `voices` out of the body.
-    const res = await call(() =>
-      fetch(`${this.#baseURL}/v1/recordings/${encodeURIComponent(recordingId)}/voice`, {
-        body: JSON.stringify(ask),
-        headers: { authorization: `Bearer ${this.#apiKey}`, 'content-type': 'application/json' },
-        method: 'POST',
-        signal: AbortSignal.timeout(30_000),
-      }),
-    )
-    const body = (await res.json().catch(() => null)) as null | { code?: string; data?: { details?: unknown }; message?: string }
-    if (res.ok) return body as unknown as VoiceTrack[]
-    if (res.status === 502 || res.status === 503 || res.status === 504) throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
-    if (isGone(res.status, body?.message ?? '')) throw new VocalStackAPIError(404, 'not_found', NOT_IN_WORKSPACE)
-    throw new VocalStackAPIError(res.status, body?.code ?? 'http_error', body?.message ?? `VocalStack answered ${res.status}`)
+  speak(transcriptionId: string, langs: string[], as: SpeakAs = { cloned: false }): Promise<VoiceTrack[]> {
+    return call(() => this.sdk.transcriptions.requestVoice(transcriptionId, { langs, voices: as.cloned ? 'cloned' : 'synthetic' }) as unknown as Promise<VoiceTrack[]>)
   }
 
-  voiceTracks(recordingId: string, lang?: string) {
-    return call(() => this.sdk.recordings.voice(recordingId, lang) as unknown as Promise<VoiceTrack[]>)
+  voiceTracks(transcriptionId: string, lang?: string) {
+    return call(() => this.sdk.transcriptions.voice(transcriptionId, lang) as unknown as Promise<VoiceTrack[]>)
   }
 
-  /** An address of the recording's audio, or of a spoken translation's, that works for an hour or so. */
-  async audioURL(recordingId: string, opts: { format?: 'caf' | 'mp3' | 'ogg'; kind: 'delivery' | 'voice'; lang?: string; voice?: string }): Promise<string> {
+  /** An address of the transcription's audio, or of a spoken translation's, that works for an hour or so. */
+  async audioURL(transcriptionId: string, opts: { format?: 'caf' | 'mp3' | 'ogg'; kind: 'delivery' | 'voice'; lang?: string; voice?: string }): Promise<string> {
     const format = opts.format ?? 'mp3'
-    if (opts.kind === 'delivery') return call(() => this.sdk.recordings.audioUrl(recordingId, { format, kind: 'delivery' }))
+    if (opts.kind === 'delivery') return call(() => this.sdk.transcriptions.audio(transcriptionId, { format, kind: 'delivery' }))
     // A reading in a named voice: a short-lived media token carries the voice in the address.
-    const { token } = await call(() => this.sdk.recordings.mediaToken(recordingId))
-    return this.sdk.recordings.audioSrc(recordingId, { format, kind: 'voice', lang: opts.lang, media: token, voice: opts.voice })
+    const { token } = await call(() => this.sdk.transcriptions.mediaToken(transcriptionId))
+    return this.sdk.transcriptions.audioSrc(transcriptionId, { format, kind: 'voice', lang: opts.lang, media: token, voice: opts.voice })
   }
 
-  /** A stretch of the recording as WAV (16 kHz mono), at most 120 s. */
-  clip(recordingId: string, startS: number, endS: number): Promise<Response> {
-    return call(() => this.sdk.recordings.clip(recordingId, startS, endS))
+  /** A stretch of the transcription's audio as WAV (16 kHz mono), at most 120 s. */
+  clip(transcriptionId: string, startS: number, endS: number): Promise<Response> {
+    return call(() => this.sdk.transcriptions.audioClip(transcriptionId, startS, endS))
   }
 
   async #speakerRequest(method: string, paths: Partial<Record<SpeakerRoute, string>>, init: SpeakerInit = {}): Promise<Response> {
@@ -335,19 +320,17 @@ export class VocalStackAPI {
   }
 
   /**
-   * Save a speaker from stretches of a transcribed recording (5–60 s in all), cloning their voice.
+   * Save a speaker from stretches of a transcription (5–60 s in all), cloning their voice.
    * `draft` makes a trial to hear first; keep it with `keepSpeaker`, or delete it. Saved speakers
-   * are the ones VocalStack looks for first when it works out who speaks in a new recording.
+   * are the ones VocalStack looks for first when it works out who speaks in a new transcription.
    */
   speakerFromAppearance(
-    opts: { draft: boolean; name: string; recordingId: string; spans: { end: number; start: number }[]; speaker: number; transcriptionId?: string },
+    opts: { draft: boolean; name: string; spans: { end: number; start: number }[]; speaker: number; transcriptionId: string },
     idempotencyKey: string,
   ) {
-    const { recordingId, speaker, transcriptionId, ...rest } = opts
-    const common = { ...rest, consent: true, library: true }
-    return this.#speaker('POST', { speakers: transcriptionId ? '/v1/speakers/from-appearance' : undefined, voices: '/v1/voices/from-speaker' }, {
-      // The spans are times in this recording: name it, or the server takes the latest one the speaker is heard in.
-      body: (route) => (route === 'speakers' ? { ...common, appearance: speaker, recordingId, transcriptionId } : { ...common, recordingId, speaker }),
+    const { speaker, ...rest } = opts
+    return this.#speaker('POST', { speakers: '/v1/speakers/from-appearance' }, {
+      body: () => ({ ...rest, appearance: speaker, consent: true, library: true }),
       idempotencyKey,
     })
   }
@@ -370,8 +353,8 @@ export class VocalStackAPI {
     return this.#speakerRequest('GET', both(`/${encodeURIComponent(id)}/preview`), { audio: true, query: { format, lang } })
   }
 
-  availableVoices(lang: string, recordingId?: string) {
-    return call(() => this.sdk.voices.available(lang, { recording: recordingId }) as unknown as Promise<{ lang: string; voices: VoiceOption[] }>)
+  availableVoices(lang: string, transcriptionId?: string) {
+    return call(() => this.sdk.voices.available(lang, { transcription: transcriptionId }) as unknown as Promise<{ lang: string; voices: VoiceOption[] }>)
   }
 }
 
