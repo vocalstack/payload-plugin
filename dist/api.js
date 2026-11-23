@@ -21,8 +21,7 @@ function savedSpeakerOf(raw) {
         state: clone?.state ?? 'none',
     };
 }
-const speakerRoutes = new Map();
-const both = (rest) => ({ speakers: `/v1/speakers${rest}`, voices: `/v1/voices${rest}` });
+const speakerPath = (rest) => `/v1/speakers${rest}`;
 export const UNAVAILABLE = 'VocalStack is unavailable, try again shortly.';
 /** A stored transcription the connected key cannot see: made in another workspace (the workspace was changed), or deleted. */
 export const NOT_IN_WORKSPACE = 'This transcript is not in the connected VocalStack workspace: it was made in another workspace, or deleted in VocalStack. Transcribe the file again to work with it here.';
@@ -41,7 +40,7 @@ function timeoutFor(url, method = 'GET') {
     const path = new URL(url).pathname;
     if (path.endsWith('/translation'))
         return 180_000;
-    if (method === 'POST' && (path === '/v1/speakers' || path === '/v1/voices'))
+    if (method === 'POST' && path === '/v1/speakers')
         return 120_000;
     if (path.endsWith('/audio/clip') || path.endsWith('/preview'))
         return 60_000;
@@ -160,36 +159,20 @@ export class VocalStackAPI {
     clip(transcriptionId, startS, endS) {
         return call(() => this.sdk.transcriptions.audioClip(transcriptionId, startS, endS));
     }
-    async #speakerRequest(method, paths, init = {}) {
-        const first = speakerRoutes.get(this.#baseURL) ?? 'speakers';
-        const order = first === 'speakers' ? ['speakers', 'voices'] : ['voices', 'speakers'];
+    #speakerRequest(method, path, init = {}) {
         const query = Object.entries(init.query ?? {}).filter((e) => e[1] !== undefined);
         const qs = query.length ? `?${new URLSearchParams(query)}` : '';
-        let last;
-        for (const route of order) {
-            const path = paths[route];
-            if (!path)
-                continue;
-            const url = `${this.#baseURL}${path}${qs}`;
-            const headers = { accept: init.audio ? '*/*' : 'application/json', authorization: `Bearer ${this.#apiKey}` };
-            if (init.body)
-                headers['content-type'] = 'application/json';
-            if (init.idempotencyKey)
-                headers['idempotency-key'] = init.idempotencyKey;
-            const body = init.form ?? (init.body ? JSON.stringify(init.body(route)) : undefined);
-            const res = await call(() => fetch(url, { body, headers, method, signal: AbortSignal.timeout(timeoutFor(url, method)) }));
-            if (res.status !== 404) {
-                speakerRoutes.set(this.#baseURL, route);
-                return res;
-            }
-            last = res;
-        }
-        if (!last)
-            throw new VocalStackAPIError(404, 'not_found', 'Not found.');
-        return last;
+        const url = `${this.#baseURL}${path}${qs}`;
+        const headers = { accept: init.audio ? '*/*' : 'application/json', authorization: `Bearer ${this.#apiKey}` };
+        if (init.body)
+            headers['content-type'] = 'application/json';
+        if (init.idempotencyKey)
+            headers['idempotency-key'] = init.idempotencyKey;
+        const body = init.form ?? (init.body ? JSON.stringify(init.body) : undefined);
+        return call(() => fetch(url, { body, headers, method, signal: AbortSignal.timeout(timeoutFor(url, method)) }));
     }
-    async #speaker(method, paths, init) {
-        const res = await this.#speakerRequest(method, paths, init);
+    async #speaker(method, path, init) {
+        const res = await this.#speakerRequest(method, path, init);
         const body = (await res.json().catch(() => null));
         if (res.ok && body)
             return savedSpeakerOf(body);
@@ -201,14 +184,14 @@ export class VocalStackAPI {
         // An empty id would read GET /v1/speakers/, the list, as if it were one speaker.
         if (!id)
             return Promise.reject(new VocalStackAPIError(404, 'not_found', 'No such speaker.'));
-        return this.#speaker('GET', both(`/${encodeURIComponent(id)}`));
+        return this.#speaker('GET', speakerPath(`/${encodeURIComponent(id)}`));
     }
     /** Save a speaker from a recorded sample (30 s or more), cloning their voice. Needs the speaker's permission. */
     createSpeaker(sample, fileName, meta, idempotencyKey) {
         const form = new FormData();
         form.append('meta', JSON.stringify(meta));
         form.append('sample', sample, fileName);
-        return this.#speaker('POST', both(''), { form, idempotencyKey });
+        return this.#speaker('POST', speakerPath(''), { form, idempotencyKey });
     }
     /**
      * Save a speaker from stretches of a transcription (5–60 s in all), cloning their voice.
@@ -217,17 +200,17 @@ export class VocalStackAPI {
      */
     speakerFromAppearance(opts, idempotencyKey) {
         const { speaker, ...rest } = opts;
-        return this.#speaker('POST', { speakers: '/v1/speakers/from-appearance' }, {
-            body: () => ({ ...rest, appearance: speaker, consent: true, library: true }),
+        return this.#speaker('POST', speakerPath('/from-appearance'), {
+            body: { ...rest, appearance: speaker, consent: true, library: true },
             idempotencyKey,
         });
     }
     /** Keep a trial speaker, as `name`, with the speaker's permission. */
     keepSpeaker(id, name) {
-        return this.#speaker('PATCH', both(`/${encodeURIComponent(id)}`), { body: () => ({ consent: true, draft: false, library: true, name }) });
+        return this.#speaker('PATCH', speakerPath(`/${encodeURIComponent(id)}`), { body: { consent: true, draft: false, library: true, name } });
     }
     async deleteSpeaker(id) {
-        const res = await this.#speakerRequest('DELETE', both(`/${encodeURIComponent(id)}`));
+        const res = await this.#speakerRequest('DELETE', speakerPath(`/${encodeURIComponent(id)}`));
         if (res.ok)
             return;
         const body = (await res.json().catch(() => null));
@@ -237,7 +220,7 @@ export class VocalStackAPI {
     }
     /** The saved speaker's cloned voice speaking a few seconds of `lang`, Ogg/Opus or CAF. 202 while it is being made. */
     speakerVoicePreview(id, lang, format = 'ogg') {
-        return this.#speakerRequest('GET', both(`/${encodeURIComponent(id)}/preview`), { audio: true, query: { format, lang } });
+        return this.#speakerRequest('GET', speakerPath(`/${encodeURIComponent(id)}/preview`), { audio: true, query: { format, lang } });
     }
     availableVoices(lang, transcriptionId) {
         return call(() => this.sdk.voices.available(lang, { transcription: transcriptionId }));

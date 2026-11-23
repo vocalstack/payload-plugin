@@ -71,10 +71,8 @@ function savedSpeakerOf(raw: RawSpeaker): SavedSpeaker {
   }
 }
 
-type SpeakerRoute = 'speakers' | 'voices'
-const speakerRoutes = new Map<string, SpeakerRoute>()
-type SpeakerInit = { audio?: boolean; body?: (route: SpeakerRoute) => unknown; form?: FormData; idempotencyKey?: string; query?: Record<string, string | undefined> }
-const both = (rest: string): Record<SpeakerRoute, string> => ({ speakers: `/v1/speakers${rest}`, voices: `/v1/voices${rest}` })
+type SpeakerInit = { audio?: boolean; body?: unknown; form?: FormData; idempotencyKey?: string; query?: Record<string, string | undefined> }
+const speakerPath = (rest: string) => `/v1/speakers${rest}`
 
 export type VoiceOption = { cloned: boolean; default: boolean; gender?: null | string; id: string; name: string; quality: number; ready?: boolean }
 
@@ -131,7 +129,7 @@ export class VocalStackAPIError extends Error {
 function timeoutFor(url: string, method = 'GET'): number {
   const path = new URL(url).pathname
   if (path.endsWith('/translation')) return 180_000
-  if (method === 'POST' && (path === '/v1/speakers' || path === '/v1/voices')) return 120_000
+  if (method === 'POST' && path === '/v1/speakers') return 120_000
   if (path.endsWith('/audio/clip') || path.endsWith('/preview')) return 60_000
   return 30_000
 }
@@ -272,33 +270,19 @@ export class VocalStackAPI {
     return call(() => this.sdk.transcriptions.audioClip(transcriptionId, startS, endS))
   }
 
-  async #speakerRequest(method: string, paths: Partial<Record<SpeakerRoute, string>>, init: SpeakerInit = {}): Promise<Response> {
-    const first = speakerRoutes.get(this.#baseURL) ?? 'speakers'
-    const order: SpeakerRoute[] = first === 'speakers' ? ['speakers', 'voices'] : ['voices', 'speakers']
+  #speakerRequest(method: string, path: string, init: SpeakerInit = {}): Promise<Response> {
     const query = Object.entries(init.query ?? {}).filter((e): e is [string, string] => e[1] !== undefined)
     const qs = query.length ? `?${new URLSearchParams(query)}` : ''
-    let last: Response | undefined
-    for (const route of order) {
-      const path = paths[route]
-      if (!path) continue
-      const url = `${this.#baseURL}${path}${qs}`
-      const headers: Record<string, string> = { accept: init.audio ? '*/*' : 'application/json', authorization: `Bearer ${this.#apiKey}` }
-      if (init.body) headers['content-type'] = 'application/json'
-      if (init.idempotencyKey) headers['idempotency-key'] = init.idempotencyKey
-      const body = init.form ?? (init.body ? JSON.stringify(init.body(route)) : undefined)
-      const res = await call(() => fetch(url, { body, headers, method, signal: AbortSignal.timeout(timeoutFor(url, method)) }))
-      if (res.status !== 404) {
-        speakerRoutes.set(this.#baseURL, route)
-        return res
-      }
-      last = res
-    }
-    if (!last) throw new VocalStackAPIError(404, 'not_found', 'Not found.')
-    return last
+    const url = `${this.#baseURL}${path}${qs}`
+    const headers: Record<string, string> = { accept: init.audio ? '*/*' : 'application/json', authorization: `Bearer ${this.#apiKey}` }
+    if (init.body) headers['content-type'] = 'application/json'
+    if (init.idempotencyKey) headers['idempotency-key'] = init.idempotencyKey
+    const body = init.form ?? (init.body ? JSON.stringify(init.body) : undefined)
+    return call(() => fetch(url, { body, headers, method, signal: AbortSignal.timeout(timeoutFor(url, method)) }))
   }
 
-  async #speaker(method: string, paths: Partial<Record<SpeakerRoute, string>>, init?: SpeakerInit): Promise<SavedSpeaker> {
-    const res = await this.#speakerRequest(method, paths, init)
+  async #speaker(method: string, path: string, init?: SpeakerInit): Promise<SavedSpeaker> {
+    const res = await this.#speakerRequest(method, path, init)
     const body = (await res.json().catch(() => null)) as null | (RawSpeaker & { code?: string; message?: string })
     if (res.ok && body) return savedSpeakerOf(body)
     if (res.status === 502 || res.status === 503 || res.status === 504) throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
@@ -308,7 +292,7 @@ export class VocalStackAPI {
   savedSpeaker(id: string) {
     // An empty id would read GET /v1/speakers/, the list, as if it were one speaker.
     if (!id) return Promise.reject(new VocalStackAPIError(404, 'not_found', 'No such speaker.'))
-    return this.#speaker('GET', both(`/${encodeURIComponent(id)}`))
+    return this.#speaker('GET', speakerPath(`/${encodeURIComponent(id)}`))
   }
 
   /** Save a speaker from a recorded sample (30 s or more), cloning their voice. Needs the speaker's permission. */
@@ -316,7 +300,7 @@ export class VocalStackAPI {
     const form = new FormData()
     form.append('meta', JSON.stringify(meta))
     form.append('sample', sample, fileName)
-    return this.#speaker('POST', both(''), { form, idempotencyKey })
+    return this.#speaker('POST', speakerPath(''), { form, idempotencyKey })
   }
 
   /**
@@ -329,19 +313,19 @@ export class VocalStackAPI {
     idempotencyKey: string,
   ) {
     const { speaker, ...rest } = opts
-    return this.#speaker('POST', { speakers: '/v1/speakers/from-appearance' }, {
-      body: () => ({ ...rest, appearance: speaker, consent: true, library: true }),
+    return this.#speaker('POST', speakerPath('/from-appearance'), {
+      body: { ...rest, appearance: speaker, consent: true, library: true },
       idempotencyKey,
     })
   }
 
   /** Keep a trial speaker, as `name`, with the speaker's permission. */
   keepSpeaker(id: string, name: string) {
-    return this.#speaker('PATCH', both(`/${encodeURIComponent(id)}`), { body: () => ({ consent: true, draft: false, library: true, name }) })
+    return this.#speaker('PATCH', speakerPath(`/${encodeURIComponent(id)}`), { body: { consent: true, draft: false, library: true, name } })
   }
 
   async deleteSpeaker(id: string): Promise<void> {
-    const res = await this.#speakerRequest('DELETE', both(`/${encodeURIComponent(id)}`))
+    const res = await this.#speakerRequest('DELETE', speakerPath(`/${encodeURIComponent(id)}`))
     if (res.ok) return
     const body = (await res.json().catch(() => null)) as null | { code?: string; message?: string }
     if (res.status === 502 || res.status === 503 || res.status === 504) throw new VocalStackAPIError(503, 'unavailable', UNAVAILABLE)
@@ -350,7 +334,7 @@ export class VocalStackAPI {
 
   /** The saved speaker's cloned voice speaking a few seconds of `lang`, Ogg/Opus or CAF. 202 while it is being made. */
   speakerVoicePreview(id: string, lang?: string, format: 'caf' | 'ogg' = 'ogg') {
-    return this.#speakerRequest('GET', both(`/${encodeURIComponent(id)}/preview`), { audio: true, query: { format, lang } })
+    return this.#speakerRequest('GET', speakerPath(`/${encodeURIComponent(id)}/preview`), { audio: true, query: { format, lang } })
   }
 
   availableVoices(lang: string, transcriptionId?: string) {
