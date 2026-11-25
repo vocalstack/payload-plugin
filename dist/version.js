@@ -1,3 +1,3 @@
 // Written by scripts/version.mjs from package.json. Do not edit.
 export const PACKAGE_NAME = "@vocalstack/payload";
-export const VERSION = "0.9.1";
+export const VERSION = "0.10.0";

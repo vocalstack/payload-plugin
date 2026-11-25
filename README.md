@@ -176,7 +176,7 @@ The translation is saved on the document, and where VocalStack can read the lang
 
 When VocalStack does not answer (an outage, an upgrade), the endpoints say *VocalStack is unavailable, try again shortly.* instead of waiting.
 
-**How the audio reaches VocalStack.** If the file has a public address, VocalStack fetches it (`POST /v1/transcriptions { url }`). Otherwise (localhost, a private network) the plugin uploads the bytes. Either way the job runs on VocalStack, and the admin polls every 3 s. The connected workspace is billed per second, with a 5-minute minimum per transcription.
+**How the audio reaches VocalStack.** If the file has a public address, VocalStack fetches it (`POST /v1/transcriptions { url }`). Otherwise (localhost, a private network) the plugin uploads the bytes. If VocalStack's fetch of a public address fails because of the link (its server refuses VocalStack, as addresses signed for one viewer, IP address or region do; it answers with nothing; or it cannot be reached or found from VocalStack: job `errorCode` `link_refused`, `link_empty`, `link_unreachable` or `link_not_found`), the plugin reads the file itself and uploads the bytes in a new job, once. The job's own reason is shown only when that fails too. Either way the job runs on VocalStack, and the admin polls every 3 s. The connected workspace is billed per second, with a 5-minute minimum per transcription.
 
 ## The workspace
 

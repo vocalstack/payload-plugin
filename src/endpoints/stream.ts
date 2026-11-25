@@ -5,7 +5,7 @@ import type { AudioFieldConfig, StatusResponse, TranscriptSentence, VocalStackPl
 import { DEFAULT_API_URL, VocalStackAPI } from '../api.js'
 import { resolveAPIKey } from '../settings.js'
 import { attachWords } from '../text.js'
-import { apiError, checkJob, locate, toSentences } from './transcribe.js'
+import { apiError, checkJob, locate, refileWith, toSentences } from './transcribe.js'
 
 type Word = { end: number; start: number; text: string }
 
@@ -81,8 +81,10 @@ export function streamEndpoint(collection: CollectionSlug, options: VocalStackPl
           // VocalStack signals the end several ways (progress, state, socket close); check once at a time.
           let settling: Promise<void> | undefined
           const settle = () =>
-            (settling ??= checkJob(api, target, transcriptionId)
-              .then((r) => (r.status === 'processing' ? undefined : finish(r)), (err) => finish({ error: (err as Error).message, status: 'failed' }))
+            (settling ??= checkJob(api, target, transcriptionId, refileWith(req, api, target, collection, options.spokenLanguage))
+              .then(
+                // A job started again from the file's bytes (its link failed) has a new id: close, and EventSource reconnects to follow it.
+                (r) => (r.status === 'processing' && (!r.vocalstack || r.vocalstack.transcriptionId === transcriptionId) ? undefined : finish(r)), (err) => finish({ error: (err as Error).message, status: 'failed' }))
               .finally(() => (settling = undefined)))
 
           // What the page has been told: settled sentences by id, the words of committed

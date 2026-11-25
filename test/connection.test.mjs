@@ -5,7 +5,7 @@ import { afterEach, beforeEach, test } from 'node:test'
 
 import { NOT_IN_WORKSPACE, VocalStackAPI } from '../dist/api.js'
 import { connectionEndpoints, forgetOwners } from '../dist/endpoints/connection.js'
-import { checkJob } from '../dist/endpoints/transcribe.js'
+import { checkJob, refileWith } from '../dist/endpoints/transcribe.js'
 
 const API = 'https://api.test'
 const ACME = { iconUrl: '/workspace-icons/w-acme?v=2&exp=9&sig=s', id: 'w-acme', name: 'Acme studio', personal: false }
@@ -276,4 +276,52 @@ test('a reading is asked for by transcription, in the voices chosen', async () =
 
 test('a wrong API address is not mistaken for a transcript in another workspace', async () => {
   await assert.rejects(new VocalStackAPI('vs_key_new', API).job('tx-1'), (err) => err.status === 404 && /^no route/.test(err.message))
+})
+
+const linkTarget = (saved, id) => ({
+  data: { status: 'processing', transcriptionId: id },
+  fileName: 'sermon.mp3',
+  name: 'Sermon',
+  save: async (patch) => (saved.push(patch), { ...patch }),
+  url: async () => 'https://files.test/media/sermon.mp3',
+})
+const refileRequest = () => ({ headers: new Headers(), origin: 'https://cms.test', routeParams: { id: '7' } })
+const failedJob = (errorCode, id) => () =>
+  reply({ error: 'The link refused VocalStack.', errorCode, progress: { pct: 0 }, state: 'failed', transcriptionId: id })
+
+test("a link VocalStack's fetch was refused is transcribed again from the file's bytes", async () => {
+  answers['/v1/transcriptions/tx-r1/job'] = failedJob('link_refused', 'tx-r1')
+  answers['/media/sermon.mp3'] = () => new Response(new Uint8Array([1, 2, 3]), { headers: { 'content-type': 'audio/mpeg' } })
+  let sent
+  answers['/v1/transcriptions'] = ({ init }) => ((sent = init), reply({ id: 'tx-2', job: { progress: { pct: 0 }, state: 'queued', transcriptionId: 'tx-2' }, name: 'Sermon' }, 201))
+  const saved = []
+  const target = linkTarget(saved, 'tx-r1')
+  const api = new VocalStackAPI('vs_key', API)
+  const res = await checkJob(api, target, 'tx-r1', refileWith(refileRequest(), api, target, 'media'))
+  assert.equal(res.status, 'processing')
+  assert.equal(res.vocalstack.transcriptionId, 'tx-2')
+  assert.deepEqual(saved, [{ error: null, status: 'processing', transcriptionId: 'tx-2' }])
+  assert.equal(sent.method, 'POST')
+  assert.ok(sent.body instanceof FormData, 'the bytes are uploaded, not the link sent again')
+})
+
+test('a link failure that bytes cannot fix (too long) fails as before', async () => {
+  answers['/v1/transcriptions/tx-r2/job'] = failedJob('link_too_long', 'tx-r2')
+  const saved = []
+  const target = linkTarget(saved, 'tx-r2')
+  const api = new VocalStackAPI('vs_key', API)
+  const res = await checkJob(api, target, 'tx-r2', refileWith(refileRequest(), api, target, 'media'))
+  assert.equal(res.status, 'failed')
+  assert.ok(!calls.some((c) => c.path === '/v1/transcriptions'))
+})
+
+test("when Payload cannot read the file either, the link's reason is the error", async () => {
+  answers['/v1/transcriptions/tx-r3/job'] = failedJob('link_unreachable', 'tx-r3')
+  answers['/media/sermon.mp3'] = () => new Response('gone', { status: 404 })
+  const saved = []
+  const target = linkTarget(saved, 'tx-r3')
+  const api = new VocalStackAPI('vs_key', API)
+  const res = await checkJob(api, target, 'tx-r3', refileWith(refileRequest(), api, target, 'media'))
+  assert.equal(res.status, 'failed')
+  assert.equal(res.error, 'The link refused VocalStack.')
 })

@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto'
 
 import type { ArrayRow, AudioFieldConfig, StatusResponse, TranscriptSentence, UploadDoc, VocalStackFieldData, VocalStackPluginOptions } from '../types.js'
 
-import { type Job, type Transcript, DEFAULT_API_URL, NOT_IN_WORKSPACE, VocalStackAPI, VocalStackAPIError } from '../api.js'
+import { type Job, type Transcript, type Transcription, DEFAULT_API_URL, NOT_IN_WORKSPACE, VocalStackAPI, VocalStackAPIError } from '../api.js'
 import { fetchFile, isPublicURL, resolveFileURL } from '../fileSource.js'
 import { attachWords, transcriptText } from '../text.js'
 import { resolveAPIKey } from '../settings.js'
@@ -26,6 +26,9 @@ function serially<T>(key: string, run: () => Promise<T>): Promise<T> {
 
 /** Finished jobs being saved, so that every "done" signal for one job shares a single save. */
 const finishing = new Map<string, Promise<StatusResponse>>()
+
+/** Jobs whose link failed, being started again from the bytes: one new job per failed one. */
+const refiling = new Map<string, Promise<StatusResponse>>()
 
 /** Whether the signed-in user may update this document, by the collection's own `access.update`. */
 export async function canUpdate(req: PayloadRequest, collection: CollectionSlug, id: number | string): Promise<boolean> {
@@ -143,10 +146,46 @@ export function apiError(err: unknown): Response {
 }
 
 /**
- * Where a job stands, saving the outcome on the document once it is over: the
- * whole transcript when done, the reason when it failed.
+ * Link failures that sending the bytes can get past: the file's server refused
+ * VocalStack (signed for one viewer, IP address or region), answered with nothing,
+ * or could not be reached or found from VocalStack. Payload may still read the file.
  */
-export async function checkJob(api: VocalStackAPI, target: Target, transcriptionId: string): Promise<StatusResponse> {
+const REFILE_CODES = new Set(['link_empty', 'link_not_found', 'link_refused', 'link_unreachable'])
+
+/** Start a job for the target's file: by link when VocalStack can fetch it, otherwise (or when `asFile`) by sending the bytes. */
+export async function startJob(
+  req: PayloadRequest,
+  api: VocalStackAPI,
+  target: Target,
+  call: { idempotencyKey: string; name: string; spokenLanguage?: string },
+  asFile = false,
+): Promise<Transcription & { job: Job }> {
+  const url = await target.url()
+  if (!url) throw new Error('There is no audio file here.')
+  const tx =
+    !asFile && isPublicURL(url)
+      ? await api.transcribeURL(url, call)
+      : await api.transcribeFile(await fetchFile(req, url), decodeURIComponent(new URL(url).pathname.split('/').pop() || target.fileName), call)
+  if (!tx.job) throw new Error('VocalStack did not start a job for this file.')
+  return tx as Transcription & { job: Job }
+}
+
+/** Sends the file's bytes in place of a link VocalStack could not use; the new job is saved on the target. */
+export function refileWith(req: PayloadRequest, api: VocalStackAPI, target: Target, collection: CollectionSlug, spokenLanguage?: string) {
+  return async (): Promise<StatusResponse> => {
+    const id = req.routeParams?.id as string
+    const tx = await startJob(req, api, target, { idempotencyKey: `payload:${collection}:${id}:${randomUUID()}`, name: target.name, spokenLanguage }, true)
+    const vocalstack = await target.save({ error: null, status: 'processing', transcriptionId: tx.id })
+    return { phase: tx.job.state, progress: 0, status: 'processing', vocalstack }
+  }
+}
+
+/**
+ * Where a job stands, saving the outcome on the document once it is over: the
+ * whole transcript when done, the reason when it failed. With `refile`, a job whose
+ * link failed (see REFILE_CODES) is started again from the file's bytes.
+ */
+export async function checkJob(api: VocalStackAPI, target: Target, transcriptionId: string, refile?: () => Promise<StatusResponse>): Promise<StatusResponse> {
   let job: Job
   try {
     job = await api.job(transcriptionId)
@@ -157,6 +196,17 @@ export async function checkJob(api: VocalStackAPI, target: Target, transcription
     return { error: NOT_IN_WORKSPACE, status: 'failed', vocalstack: await target.save({ error: NOT_IN_WORKSPACE, status: 'failed' }) }
   }
   if (job.state === 'stopped' || (job.state === 'failed' && job.errorCode === 'stopped')) return restore(target)
+  if (job.state === 'failed' && refile && job.errorCode && REFILE_CODES.has(job.errorCode)) {
+    let again = refiling.get(transcriptionId)
+    if (!again) {
+      again = refile()
+      refiling.set(transcriptionId, again)
+      void again.catch(() => undefined).then(() => setTimeout(() => refiling.delete(transcriptionId), 60_000))
+    }
+    // Reading or sending the file failed too: report the link's reason, as before.
+    const started = await again.catch(() => undefined)
+    if (started) return started
+  }
   if (job.state === 'failed' || job.state === 'cropping') {
     const error = job.state === 'cropping' ? 'VocalStack is waiting for a crop window; open the transcription in VocalStack.' : (job.error ?? 'The transcription failed.')
     return { error, status: 'failed', vocalstack: await target.save({ error, status: 'failed' }) }
@@ -227,16 +277,12 @@ export function transcribeEndpoints(collection: CollectionSlug, options: VocalSt
         if (target instanceof Response) return target
         if (target.data.status === 'processing') return json({ status: 'processing', vocalstack: target.data } satisfies StatusResponse)
 
-        const url = await target.url()
-        if (!url) return json({ error: 'There is no audio file here.' }, 400)
+        if (!(await target.url())) return json({ error: 'There is no audio file here.' }, 400)
 
         const api = new VocalStackAPI(apiKey, apiURL)
         const call = { idempotencyKey: `payload:${collection}:${id}:${randomUUID()}`, name: target.name, spokenLanguage: options.spokenLanguage }
         try {
-          const tx = isPublicURL(url)
-            ? await api.transcribeURL(url, call)
-            : await api.transcribeFile(await fetchFile(req, url), decodeURIComponent(new URL(url).pathname.split('/').pop() || target.fileName), call)
-          if (!tx.job) throw new Error('VocalStack did not start a job for this file.')
+          const tx = await startJob(req, api, target, call)
           const vocalstack = await target.save({ error: null, recordingId: null, status: 'processing', transcriptionId: tx.id })
           return json({ phase: tx.job.state, progress: 0, status: 'processing', vocalstack } satisfies StatusResponse, 202)
         } catch (err) {
@@ -259,7 +305,8 @@ export function transcribeEndpoints(collection: CollectionSlug, options: VocalSt
         const apiKey = await resolveAPIKey(req, options)
         if (!apiKey) return json({ code: 'not_connected', error: 'Connect VocalStack first.' }, 409)
         try {
-          return json(await checkJob(new VocalStackAPI(apiKey, apiURL), target, field.transcriptionId))
+          const api = new VocalStackAPI(apiKey, apiURL)
+          return json(await checkJob(api, target, field.transcriptionId, refileWith(req, api, target, collection, options.spokenLanguage)))
         } catch (err) {
           return apiError(err)
         }
@@ -287,7 +334,7 @@ export function transcribeEndpoints(collection: CollectionSlug, options: VocalSt
           return json(await restore(target))
         } catch (err) {
           // Too late to stop: the job ended meanwhile, so take its outcome instead.
-          if (err instanceof VocalStackAPIError && err.status === 409) return json(await checkJob(api, target, transcriptionId).catch(() => restore(target)))
+          if (err instanceof VocalStackAPIError && err.status === 409) return json(await checkJob(api, target, transcriptionId, refileWith(req, api, target, collection, options.spokenLanguage)).catch(() => restore(target)))
           return apiError(err)
         }
       },
