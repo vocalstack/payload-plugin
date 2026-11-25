@@ -37,13 +37,15 @@ const merge = (current, patch) => ({
     ...current,
     ...(typeof patch === 'function' ? patch(current ?? {}) : patch),
 });
-export async function locate(req, collection, options, rowFields, readAs) {
-    const id = req.routeParams?.id;
+export async function locate(req, collection, options, rowFields, readAs, 
+/** Which document (and row) to act on; by default the request's own (`/:id`, `?field=&row=`). */
+at) {
+    const id = at?.id ?? req.routeParams?.id;
     const find = (overrideAccess) => req.payload.findByID({ id, collection, depth: 0, overrideAccess, req, user: req.user }).catch(() => null);
     const doc = await find(readAs === 'admin');
     if (!doc)
         return json({ error: 'Not found.' }, 404);
-    const field = req.searchParams.get('field');
+    const field = at ? at.field : req.searchParams.get('field');
     if (!field) {
         const upload = doc;
         if (!req.payload.collections[collection]?.config.upload)
@@ -54,6 +56,7 @@ export async function locate(req, collection, options, rowFields, readAs) {
             data: upload.vocalstack ?? {},
             doc,
             fileName: upload.filename ?? 'audio',
+            id,
             name: upload.filename ?? `${collection} ${id}`,
             save: (patch) => serially(`${collection}:${id}`, async () => {
                 const fresh = (typeof patch === 'function' ? (await find(true)) : null) ?? upload;
@@ -67,7 +70,7 @@ export async function locate(req, collection, options, rowFields, readAs) {
     const config = rowFields.find((f) => f.field === field);
     if (!config)
         return json({ error: `${field} is not a VocalStack audio field.` }, 400);
-    const rowId = req.searchParams.get('row');
+    const rowId = at ? at.row : req.searchParams.get('row');
     const row = (doc[field] ?? []).find((r) => r.id === rowId);
     if (!row)
         return json({ error: 'Save the document first, then transcribe.' }, 404);
@@ -76,6 +79,7 @@ export async function locate(req, collection, options, rowFields, readAs) {
         data: row.vocalstack ?? {},
         doc,
         fileName: 'audio',
+        id,
         name: config.name?.({ doc, row }) ?? (typeof doc.title === 'string' && doc.title ? doc.title : `${collection} ${id}`),
         row,
         save: (patch) => serially(`${collection}:${id}`, async () => {
@@ -136,8 +140,7 @@ export async function startJob(req, api, target, call, asFile = false) {
 /** Sends the file's bytes in place of a link VocalStack could not use; the new job is saved on the target. */
 export function refileWith(req, api, target, collection, spokenLanguage) {
     return async () => {
-        const id = req.routeParams?.id;
-        const tx = await startJob(req, api, target, { idempotencyKey: `payload:${collection}:${id}:${randomUUID()}`, name: target.name, spokenLanguage }, true);
+        const tx = await startJob(req, api, target, { idempotencyKey: `payload:${collection}:${target.id}:${randomUUID()}`, name: target.name, spokenLanguage }, true);
         const vocalstack = await target.save({ error: null, status: 'processing', transcriptionId: tx.id });
         return { phase: tx.job.state, progress: 0, status: 'processing', vocalstack };
     };
@@ -147,7 +150,9 @@ export function refileWith(req, api, target, collection, spokenLanguage) {
  * whole transcript when done, the reason when it failed. With `refile`, a job whose
  * link failed (see REFILE_CODES) is started again from the file's bytes.
  */
-export async function checkJob(api, target, transcriptionId, refile) {
+export async function checkJob(api, target, transcriptionId, refile, 
+/** Read the sentences so far while it runs (for a page following it). */
+withPartial = true) {
     let job;
     try {
         job = await api.job(transcriptionId);
@@ -179,7 +184,7 @@ export async function checkJob(api, target, transcriptionId, refile) {
     }
     if (job.state !== 'done') {
         const progress = job.state === 'fetching' ? (job.progress.phasePct ?? 0) : job.progress.pct;
-        if (job.state !== 'transcribing')
+        if (job.state !== 'transcribing' || !withPartial)
             return { phase: job.progress.phase ?? job.state, progress, status: 'processing' };
         // Sentences are readable while the job runs; send what is there so far.
         const partial = await api.transcript(transcriptionId).then(toSentences, () => undefined);

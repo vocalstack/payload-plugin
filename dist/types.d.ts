@@ -47,6 +47,12 @@ export type VocalStackPluginOptions = {
      */
     oneClickConnect?: boolean;
     /**
+     * A Transcribe button above each list of transcribable documents, for the rows selected
+     * there; the list also saves transcripts that finished while no one had them open.
+     * Default: on.
+     */
+    bulkTranscribe?: boolean;
+    /**
      * Check npm for a newer version of this plugin (from the server, at most every
      * 6 hours) and say so in the admin: in the nav and on Settings → VocalStack.
      * Default `true`; `false` makes no outbound call and shows nothing.
@@ -332,4 +338,34 @@ export type SpeechResponse = {
     /** The translate endpoint ran out of time; call it again to carry on. */
     more?: boolean;
     vocalstack: VocalStackFieldData;
+};
+/** POST /api/<collection>/vocalstack/transcribe-many */
+export type BulkTranscribeResponse = {
+    /** Files that could not be started, with why. */
+    failed: {
+        error: string;
+        id: number | string;
+    }[];
+    /** Files left alone because VocalStack refused to start more (see `stopped`). */
+    notStarted: number;
+    skipped: {
+        done: number;
+        noAudio: number;
+        processing: number;
+    };
+    started: number;
+    /** VocalStack refused every further start: not connected, out of credit, a cap or a rate limit. */
+    stopped?: {
+        code?: string;
+        error: string;
+    };
+};
+/** POST /api/<collection>/vocalstack/settle */
+export type BulkSettleResponse = {
+    /** Jobs that failed since the last settle. */
+    failed: number;
+    /** Jobs saved as done since the last settle. */
+    finished: number;
+    /** Jobs still running. */
+    processing: number;
 };

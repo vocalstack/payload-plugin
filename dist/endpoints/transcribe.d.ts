@@ -9,6 +9,8 @@ export type Target = {
     data: VocalStackFieldData;
     doc: Record<string, unknown>;
     fileName: string;
+    /** The document's id. */
+    id: number | string;
     name: string;
     /** Set when the target is a row of an array field. */
     row?: ArrayRow;
@@ -16,7 +18,13 @@ export type Target = {
     save: (patch: Patch) => Promise<VocalStackFieldData>;
     url: () => Promise<string | undefined>;
 };
-export declare function locate(req: PayloadRequest, collection: CollectionSlug, options: VocalStackPluginOptions, rowFields: AudioFieldConfig[], readAs: 'admin' | 'user'): Promise<Response | Target>;
+export declare function locate(req: PayloadRequest, collection: CollectionSlug, options: VocalStackPluginOptions, rowFields: AudioFieldConfig[], readAs: 'admin' | 'user', 
+/** Which document (and row) to act on; by default the request's own (`/:id`, `?field=&row=`). */
+at?: {
+    field?: string;
+    id: number | string;
+    row?: string;
+}): Promise<Response | Target>;
 /** A transcript's sentences, each with its words. */
 export declare function toSentences(t: Pick<Transcript, 'segments' | 'sentences'>): TranscriptSentence[];
 export declare function apiError(err: unknown): Response;
@@ -35,7 +43,9 @@ export declare function refileWith(req: PayloadRequest, api: VocalStackAPI, targ
  * whole transcript when done, the reason when it failed. With `refile`, a job whose
  * link failed (see REFILE_CODES) is started again from the file's bytes.
  */
-export declare function checkJob(api: VocalStackAPI, target: Target, transcriptionId: string, refile?: () => Promise<StatusResponse>): Promise<StatusResponse>;
+export declare function checkJob(api: VocalStackAPI, target: Pick<Target, 'data' | 'save'>, transcriptionId: string, refile?: () => Promise<StatusResponse>, 
+/** Read the sentences so far while it runs (for a page following it). */
+withPartial?: boolean): Promise<StatusResponse>;
 /**
  * POST /:id/vocalstack/transcribe and GET /:id/vocalstack/status. With no query
  * they act on the upload document itself; with `?field=<array>&row=<row id>` on one row.

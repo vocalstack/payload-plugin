@@ -52,6 +52,8 @@ export type Target = {
   data: VocalStackFieldData
   doc: Record<string, unknown>
   fileName: string
+  /** The document's id. */
+  id: number | string
   name: string
   /** Set when the target is a row of an array field. */
   row?: ArrayRow
@@ -66,13 +68,15 @@ export async function locate(
   options: VocalStackPluginOptions,
   rowFields: AudioFieldConfig[],
   readAs: 'admin' | 'user',
+  /** Which document (and row) to act on; by default the request's own (`/:id`, `?field=&row=`). */
+  at?: { field?: string; id: number | string; row?: string },
 ): Promise<Response | Target> {
-  const id = req.routeParams?.id as string
+  const id = at?.id ?? (req.routeParams?.id as string)
   const find = (overrideAccess: boolean) =>
     req.payload.findByID({ id, collection, depth: 0, overrideAccess, req, user: req.user }).catch(() => null) as Promise<null | Record<string, unknown>>
   const doc = await find(readAs === 'admin')
   if (!doc) return json({ error: 'Not found.' }, 404)
-  const field = req.searchParams.get('field')
+  const field = at ? at.field : req.searchParams.get('field')
 
   if (!field) {
     const upload = doc as UploadDoc
@@ -82,6 +86,7 @@ export async function locate(
       data: upload.vocalstack ?? {},
       doc,
       fileName: upload.filename ?? 'audio',
+      id,
       name: upload.filename ?? `${collection} ${id}`,
       save: (patch) =>
         serially(`${collection}:${id}`, async () => {
@@ -96,7 +101,7 @@ export async function locate(
 
   const config = rowFields.find((f) => f.field === field)
   if (!config) return json({ error: `${field} is not a VocalStack audio field.` }, 400)
-  const rowId = req.searchParams.get('row')
+  const rowId = at ? at.row : req.searchParams.get('row')
   const row = ((doc[field] as ArrayRow[] | undefined) ?? []).find((r) => r.id === rowId)
   if (!row) return json({ error: 'Save the document first, then transcribe.' }, 404)
   const base = req.payload.config.serverURL || req.origin
@@ -104,6 +109,7 @@ export async function locate(
     data: row.vocalstack ?? {},
     doc,
     fileName: 'audio',
+    id,
     name: config.name?.({ doc, row }) ?? (typeof doc.title === 'string' && doc.title ? doc.title : `${collection} ${id}`),
     row,
     save: (patch) =>
@@ -173,8 +179,7 @@ export async function startJob(
 /** Sends the file's bytes in place of a link VocalStack could not use; the new job is saved on the target. */
 export function refileWith(req: PayloadRequest, api: VocalStackAPI, target: Target, collection: CollectionSlug, spokenLanguage?: string) {
   return async (): Promise<StatusResponse> => {
-    const id = req.routeParams?.id as string
-    const tx = await startJob(req, api, target, { idempotencyKey: `payload:${collection}:${id}:${randomUUID()}`, name: target.name, spokenLanguage }, true)
+    const tx = await startJob(req, api, target, { idempotencyKey: `payload:${collection}:${target.id}:${randomUUID()}`, name: target.name, spokenLanguage }, true)
     const vocalstack = await target.save({ error: null, status: 'processing', transcriptionId: tx.id })
     return { phase: tx.job.state, progress: 0, status: 'processing', vocalstack }
   }
@@ -185,7 +190,14 @@ export function refileWith(req: PayloadRequest, api: VocalStackAPI, target: Targ
  * whole transcript when done, the reason when it failed. With `refile`, a job whose
  * link failed (see REFILE_CODES) is started again from the file's bytes.
  */
-export async function checkJob(api: VocalStackAPI, target: Target, transcriptionId: string, refile?: () => Promise<StatusResponse>): Promise<StatusResponse> {
+export async function checkJob(
+  api: VocalStackAPI,
+  target: Pick<Target, 'data' | 'save'>,
+  transcriptionId: string,
+  refile?: () => Promise<StatusResponse>,
+  /** Read the sentences so far while it runs (for a page following it). */
+  withPartial = true,
+): Promise<StatusResponse> {
   let job: Job
   try {
     job = await api.job(transcriptionId)
@@ -213,7 +225,7 @@ export async function checkJob(api: VocalStackAPI, target: Target, transcription
   }
   if (job.state !== 'done') {
     const progress = job.state === 'fetching' ? (job.progress.phasePct ?? 0) : job.progress.pct
-    if (job.state !== 'transcribing') return { phase: job.progress.phase ?? job.state, progress, status: 'processing' }
+    if (job.state !== 'transcribing' || !withPartial) return { phase: job.progress.phase ?? job.state, progress, status: 'processing' }
     // Sentences are readable while the job runs; send what is there so far.
     const partial = await api.transcript(transcriptionId).then(toSentences, () => undefined)
     return { audio: { processedS: job.progress.processedS ?? 0, totalS: job.progress.totalS ?? undefined }, partial, phase: 'transcribing', progress, status: 'processing' }
@@ -232,12 +244,12 @@ export async function checkJob(api: VocalStackAPI, target: Target, transcription
  * there was one (a new job only replaces it once done), or none. The job's partial
  * transcript stays in VocalStack.
  */
-async function restore(target: Target): Promise<StatusResponse> {
+async function restore(target: Pick<Target, 'data' | 'save'>): Promise<StatusResponse> {
   const status = target.data.transcript ? 'done' : 'idle'
   return { status, stopped: true, vocalstack: await target.save({ error: null, status }) }
 }
 
-async function saveTranscript(api: VocalStackAPI, target: Target, transcriptionId: string): Promise<StatusResponse> {
+async function saveTranscript(api: VocalStackAPI, target: Pick<Target, 'save'>, transcriptionId: string): Promise<StatusResponse> {
   const transcript = await api.transcript(transcriptionId)
   const sentences = toSentences(transcript)
   const vocalstack = await target.save({

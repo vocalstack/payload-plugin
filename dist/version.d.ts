@@ -1,2 +1,2 @@
 export declare const PACKAGE_NAME = "@vocalstack/payload";
-export declare const VERSION = "0.10.0";
+export declare const VERSION = "0.11.0";

@@ -2,6 +2,7 @@ import type { CollectionAfterReadHook, CollectionConfig, Config, Field, Plugin }
 
 import type { ArrayRow, AudioFieldConfig, UploadDoc, VocalStackPluginOptions } from './types.js'
 
+import { bulkEndpoints } from './endpoints/bulk.js'
 import { connectionEndpoints } from './endpoints/connection.js'
 import { refreshAfterRead, speechEndpoints } from './endpoints/speech.js'
 import { streamEndpoint } from './endpoints/stream.js'
@@ -229,10 +230,24 @@ export const vocalstackPlugin =
             ? [
                 ...(collection.endpoints || []),
                 ...transcribeEndpoints(collection.slug, options, rowFields),
+                ...bulkEndpoints(collection.slug, options, rowFields, isUpload),
                 streamEndpoint(collection.slug, options, rowFields),
                 ...speechEndpoints(collection.slug, options, rowFields),
               ]
             : collection.endpoints,
+          admin:
+            enabled && options.bulkTranscribe !== false
+              ? {
+                  ...collection.admin,
+                  components: {
+                    ...collection.admin?.components,
+                    beforeListTable: [
+                      ...(collection.admin?.components?.beforeListTable ?? []),
+                      { clientProps: { collection: collection.slug }, path: '@vocalstack/payload/client#TranscribeSelected' },
+                    ],
+                  },
+                }
+              : collection.admin,
           fields,
           hooks: enabled
             ? { ...collection.hooks, afterRead: [...(collection.hooks?.afterRead ?? []), readingsAfterRead(options, rowFields, isUpload)] }
