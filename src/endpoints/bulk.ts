@@ -16,7 +16,7 @@ export const BULK_BATCH = 25
 const SETTLE_LIMIT = 40
 const SETTLE_PARALLEL = 4
 /** A list open in several tabs asks often; VocalStack is asked at most this often per collection. */
-const SETTLE_EVERY_MS = 10_000
+const SETTLE_EVERY_MS = 4_000
 
 type At = { field?: string; id: number | string; row?: string }
 
@@ -44,6 +44,14 @@ async function pool<T>(items: T[], n: number, work: (item: T) => Promise<void>) 
 
 /** A refusal that every other start would get too: no key, no credit, a cap or rate limit. */
 const stopsAll = (err: unknown) => err instanceof VocalStackAPIError && [401, 402, 403, 429].includes(err.status)
+
+/** A job's phase in the list's words: the work before and after transcribing reads as queued, fetching or finalizing. */
+function phaseOf(phase: null | string | undefined, progress: number): string {
+  if (phase === 'transcribing') return progress >= 99 ? 'finalizing' : 'transcribing'
+  if (phase === 'fetching' || phase === 'extracting') return 'fetching'
+  if (!phase || phase === 'queued') return 'queued'
+  return progress > 0 ? 'finalizing' : 'queued'
+}
 
 const lastSettle = new Map<string, { at: number; result: BulkSettleResponse }>()
 
@@ -145,7 +153,7 @@ export function bulkEndpoints(collection: CollectionSlug, options: VocalStackPlu
             for (const row of (doc[field] as ArrayRow[] | undefined) ?? []) if (row?.id && row.vocalstack?.status === 'processing') pending.push({ field, id, row: row.id })
           }
         }
-        const result: BulkSettleResponse = { failed: 0, finished: 0, processing: 0 }
+        const result: BulkSettleResponse = { failed: 0, finished: 0, jobs: [], processing: 0 }
         if (!pending.length) {
           lastSettle.set(collection, { at: Date.now(), result })
           return json(result)
@@ -159,12 +167,15 @@ export function bulkEndpoints(collection: CollectionSlug, options: VocalStackPlu
           if (target instanceof Response || target.data.status !== 'processing' || !target.data.transcriptionId) return
           try {
             const status = await checkJob(api, target, target.data.transcriptionId, refileWith(req, api, target, collection, options.spokenLanguage), false)
-            if (status.status === 'processing') result.processing++
-            else if (status.status === 'failed') result.failed++
+            if (status.status === 'processing') {
+              result.processing++
+              result.jobs.push({ id: at.id, phase: phaseOf(status.phase, status.progress ?? 0), progress: Math.round(status.progress ?? 0), row: at.row })
+            } else if (status.status === 'failed') result.failed++
             else result.finished++
           } catch {
             // VocalStack could not be asked now; the next settle asks again.
             result.processing++
+            result.jobs.push({ id: at.id, phase: 'queued', progress: 0, row: at.row })
           }
         })
         lastSettle.set(collection, { at: Date.now(), result })

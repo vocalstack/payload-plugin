@@ -5,6 +5,8 @@
  * Contract: https://api.vocalstack.com/v1/openapi.json
  */
 import { VocalStack } from '@vocalstack/js-sdk';
+/** Lets VocalStack record transcriptions made here as origin `payload`. */
+export declare const USER_AGENT = "VocalStack-Payload/0.11.0";
 export declare const DEFAULT_API_URL = "https://api.vocalstack.com";
 export declare const DEFAULT_DASHBOARD_URL = "https://app.vocalstack.com";
 export type JobState = 'cropping' | 'done' | 'failed' | 'fetching' | 'queued' | 'stopped' | 'transcribing';

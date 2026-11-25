@@ -7,6 +7,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { BulkSettleResponse, BulkTranscribeResponse } from '../types.js'
 
 import { BrandStyles, Mark } from './Brand.js'
+import { setJobs } from './progress.js'
 import { useAPI } from './useConnection.js'
 
 /** `SelectAllStatus.AllAvailable`: "Select all" across every page of the list. */
@@ -14,14 +15,13 @@ const ALL = 'allAvailable'
 
 /** Documents per request; the server takes at most this many. */
 const BATCH = 25
-/** How often the list asks for finished jobs while some are running. */
-const SETTLE_MS = 20_000
+/** How often the list asks how running jobs are doing (and saves finished ones). */
+const SETTLE_MS = 5_000
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 /**
- * Above a list of transcribable documents: [V Transcribe] for the selected rows, and how
- * many are being transcribed. While the list is open, finished jobs are saved on their
+ * Above a list of transcribable documents: [V Transcribe] for the selected rows. While the list is open, finished jobs are saved on their
  * documents (and the list refreshed), so no one has to open each one.
  */
 export const TranscribeSelected: React.FC<{ collection: string }> = ({ collection }) => {
@@ -32,20 +32,19 @@ export const TranscribeSelected: React.FC<{ collection: string }> = ({ collectio
   const modalSlug = `vocalstack-transcribe-${collection}`
 
   const [starting, setStarting] = useState<{ done: number; total: number }>()
-  const [processing, setProcessing] = useState(0)
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   const settle = useCallback(async () => {
     clearTimeout(timer.current)
     try {
       const r = await call<BulkSettleResponse>(`/${collection}/vocalstack/settle`, { method: 'POST' })
-      setProcessing(r.processing)
+      setJobs(collection, r.jobs ?? [])
       if (r.finished || r.failed) router.refresh()
       if (r.failed) toast.error(`${plural(r.failed, 'transcription')} failed. Open the document to see why.`)
       if (r.processing) timer.current = setTimeout(settle, SETTLE_MS)
     } catch {
       // Not signed in any more, or the server is away: try again later.
-      timer.current = setTimeout(settle, SETTLE_MS * 3)
+      timer.current = setTimeout(settle, SETTLE_MS * 6)
     }
   }, [call, collection, router])
 
@@ -98,7 +97,7 @@ export const TranscribeSelected: React.FC<{ collection: string }> = ({ collectio
     }
   }, [call, collection, ids, router, settle, toggleAll])
 
-  if (!count && !processing && !starting) return null
+  if (!count && !starting) return null
   const howMany = selectAll === ALL ? 'every matching document' : plural(count, 'selected document')
 
   return (
@@ -119,7 +118,6 @@ export const TranscribeSelected: React.FC<{ collection: string }> = ({ collectio
           </span>
         </Button>
       )}
-      {processing > 0 && <span style={{ color: 'var(--theme-elevation-500)' }}>VocalStack: transcribing {plural(processing, 'file')}…</span>}
       <ConfirmationModal
         body={
           <p>

@@ -94,6 +94,25 @@ vocalstackPlugin({
 
 Rows are addressed by their id: `POST /api/episodes/:id/vocalstack/transcribe?field=attachments&row=<row id>`. A new row needs saving first.
 
+### Transcribing from the list
+
+Select documents in a list (an audio upload collection, or a collection with `audioFields`) and a **Transcribe** button with the VocalStack mark shows above the table. After a confirmation it starts a transcription for every audio file of the selection (each audio row of each document), 25 documents per request; "Select all" across pages takes every document the list's filters match. Files already transcribed or in progress are skipped, and if VocalStack refuses a start every other start would get too (no credit, a cap, the key), nothing more is started and the reason is shown once. `bulkTranscribe: false` turns it off.
+
+While the list is open it asks every 5 s (`POST /api/<collection>/vocalstack/settle`) how running jobs stand, saves the ones that finished on their documents and refreshes the list, so nobody has to open each document. The answer's `jobs` (`{ id, row, phase, progress }`, phase `queued`, `fetching`, `transcribing` or `finalizing`) is also there for a list cell: `useTranscriptionProgress(collection, id)` from `@vocalstack/payload/client` returns `{ phase, progress }` for a document while it runs.
+
+```tsx
+'use client'
+import { useTranscriptionProgress } from '@vocalstack/payload/client'
+
+export const TranscribedCell = ({ cellData, rowData }) => {
+  const live = useTranscriptionProgress('sermons', rowData?.id)
+  if (live) return <span>{live.phase === 'transcribing' ? `${live.progress}%` : live.phase}</span>
+  return <span>{cellData ? '✓' : '–'}</span>
+}
+```
+
+Every call to VocalStack says `User-Agent: VocalStack-Payload/<version>`, so its transcriptions are recorded as origin `payload`.
+
 ### Speakers
 
 ```ts

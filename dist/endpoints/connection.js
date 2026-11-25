@@ -1,5 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { accountLabel, DEFAULT_API_URL, DEFAULT_DASHBOARD_URL, VocalStackAPI, VocalStackAPIError } from '../api.js';
+import { accountLabel, DEFAULT_API_URL, DEFAULT_DASHBOARD_URL, USER_AGENT, VocalStackAPI, VocalStackAPIError } from '../api.js';
 import { readSettings, writeSettings } from '../settings.js';
 import { workspaceOf } from '../workspace.js';
 const json = (body, status = 200) => Response.json(body, { status });
@@ -186,7 +186,7 @@ export function connectionEndpoints(options) {
                     return page(params.get('error') === 'access_denied' ? 'Connection cancelled.' : `VocalStack said: ${params.get('error_description') ?? params.get('error')}`, false);
                 const res = await fetch(`${apiURL}/v1/connect/token`, {
                     body: new URLSearchParams({ code: params.get('code') ?? '', code_verifier: settings.connectVerifier, grant_type: 'authorization_code', redirect_uri: callbackURL(req) }),
-                    headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded' },
+                    headers: { accept: 'application/json', 'content-type': 'application/x-www-form-urlencoded', 'user-agent': USER_AGENT },
                     method: 'POST',
                 });
                 const token = (await res.json().catch(() => ({})));

@@ -5,6 +5,9 @@
  * Contract: https://api.vocalstack.com/v1/openapi.json
  */
 import { VocalStack, VocalStackError } from '@vocalstack/js-sdk';
+import { VERSION } from './version.js';
+/** Lets VocalStack record transcriptions made here as origin `payload`. */
+export const USER_AGENT = `VocalStack-Payload/${VERSION}`;
 export const DEFAULT_API_URL = 'https://api.vocalstack.com';
 export const DEFAULT_DASHBOARD_URL = 'https://app.vocalstack.com';
 function savedSpeakerOf(raw) {
@@ -82,7 +85,15 @@ export class VocalStackAPI {
             baseUrl: baseURL,
             // One retry of a busy or restarting API; the admin and listeners ask again anyway.
             maxRetries: 1,
-            fetch: (input, init) => fetch(input, { ...init, signal: init?.signal ?? AbortSignal.timeout(timeoutFor(String(input instanceof Request ? input.url : input), init?.method)) }),
+            fetch: (input, init) => {
+                const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+                headers.set('user-agent', USER_AGENT);
+                return fetch(input, {
+                    ...init,
+                    headers,
+                    signal: init?.signal ?? AbortSignal.timeout(timeoutFor(String(input instanceof Request ? input.url : input), init?.method)),
+                });
+            },
         });
     }
     me() {
@@ -163,7 +174,7 @@ export class VocalStackAPI {
         const query = Object.entries(init.query ?? {}).filter((e) => e[1] !== undefined);
         const qs = query.length ? `?${new URLSearchParams(query)}` : '';
         const url = `${this.#baseURL}${path}${qs}`;
-        const headers = { accept: init.audio ? '*/*' : 'application/json', authorization: `Bearer ${this.#apiKey}` };
+        const headers = { accept: init.audio ? '*/*' : 'application/json', authorization: `Bearer ${this.#apiKey}`, 'user-agent': USER_AGENT };
         if (init.body)
             headers['content-type'] = 'application/json';
         if (init.idempotencyKey)

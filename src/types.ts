@@ -341,6 +341,20 @@ export type BulkSettleResponse = {
   failed: number
   /** Jobs saved as done since the last settle. */
   finished: number
+  /** Where each running job stands, by document (one entry per audio file). */
+  jobs: JobProgress[]
   /** Jobs still running. */
   processing: number
+}
+
+/** One running job, as the list shows it. */
+export type JobProgress = {
+  /** The document's id. */
+  id: number | string
+  /** `queued`, `fetching`, `transcribing`, `finalizing`: what it is doing now. */
+  phase: string
+  /** 0–100, of the whole job. */
+  progress: number
+  /** The array row, for an audio row. */
+  row?: string
 }

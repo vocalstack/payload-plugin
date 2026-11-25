@@ -12,6 +12,7 @@ const reply = (body, status = 200) => new Response(JSON.stringify(body), { heade
 let docs
 let answers
 let created
+let agents
 
 const row = (id, filename, vocalstack) => ({ id, filename, type: 'file', ...(vocalstack ? { vocalstack } : {}) })
 
@@ -31,8 +32,10 @@ beforeEach(() => {
       return reply({ id, job: { progress: { pct: 0 }, state: 'queued', transcriptionId: id }, name: 'x' }, 201)
     },
   }
-  globalThis.fetch = async (input) => {
+  agents = []
+  globalThis.fetch = async (input, init) => {
     const url = new URL(typeof input === 'string' ? input : input.url)
+    agents.push(new Headers(init?.headers ?? input.headers).get('user-agent'))
     const answer = answers[url.pathname]
     return answer ? answer({ url }) : reply({ code: 'not_found', message: `no route for ${url.pathname}` }, 404)
   }
@@ -86,6 +89,7 @@ test('the selection is transcribed: every audio row, skipping what is done, runn
   assert.equal(docs[1].attachments[0].vocalstack.status, 'processing')
   assert.deepEqual(docs[5].attachments.map((r) => r.vocalstack.transcriptionId).sort(), ['tx-2', 'tx-3'])
   assert.equal(docs[2].attachments[0].vocalstack.transcript, 'Hello', 'a finished transcript is left alone')
+  assert.ok(agents.length && agents.every((a) => /^VocalStack-Payload\/\d+\.\d+\.\d+/.test(a)), 'VocalStack is told the calls come from Payload')
 })
 
 test('out of credit: nothing more is started, and the reason comes back once', async () => {
@@ -107,7 +111,7 @@ test('settle saves a job that finished while no one had it open', async () => {
   answers['/v1/transcriptions/tx-old/transcript'] = () =>
     reply({ lang: 'en', segments: [], sentences: [{ end: 2, sentenceId: 0, speaker: 0, start: 0, text: 'Grace and peace.' }] })
   const { body } = await run('/vocalstack/settle')
-  assert.deepEqual(body, { failed: 0, finished: 1, processing: 0 })
+  assert.deepEqual(body, { failed: 0, finished: 1, jobs: [], processing: 0 })
   const saved = docs[3].attachments[0].vocalstack
   assert.equal(saved.status, 'done')
   assert.equal(saved.transcript, 'Grace and peace.')
